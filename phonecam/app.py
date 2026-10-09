@@ -634,7 +634,13 @@ class Window(QMainWindow):
         self.exposure_timer.start(90)
 
     def sync_controls(self):
-        self.motion.setText('Seamless loop · ομαλή επανάληψη' if self.capture.background and scene.is_video(self.capture.background) else 'Κινούμενα εφέ')
+        video = bool(self.capture.background) and scene.is_video(self.capture.background)
+        self.motion.setText('Seamless loop · χωρίς κόψιμο στην επανάληψη' if video else 'Κινούμενα εφέ')
+        self.motion.setToolTip(
+            'Όταν το βίντεο τελειώνει, τα τελευταία 1,5 δευτ. σβήνουν ομαλά μέσα στην αρχή του,\n'
+            'ώστε να μη φαίνεται πού ξαναρχίζει. Ετοιμάζεται μία φορά στο μέγεθος της κάμερας,\n'
+            'οπότε παίζει και πιο ελαφριά. Χωρίς αυτό, το βίντεο πηδάει απότομα στην αρχή.' if video else
+            'Η εικόνα ζωντανεύει: σύννεφα, κύματα, ομίχλη και φως που τρεμοπαίζει.\nΕτοιμάζεται μία φορά (περίπου 1 λεπτό).')
         self.fit.blockSignals(True)
         self.fit.setCurrentIndex(max(0, self.fit.findData(self.capture.fit)))
         self.fit.blockSignals(False)
