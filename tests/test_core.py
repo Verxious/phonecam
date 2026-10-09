@@ -312,6 +312,18 @@ class BackgroundTests(unittest.TestCase):
         QTest.mouseMove(wave, QPoint(700, 50))
         QTest.mouseRelease(wave, Qt.MouseButton.LeftButton, pos=QPoint(700, 50))
         self.assertEqual(spans[-1], (2.0, 5.0))
+        # Zoomed in on 2-4 s, the same pixels mean finer seconds.
+        wave.show_span(2.5, 1.0)
+        self.assertEqual(wave.view, (2.0, 4.0))
+        QTest.mousePress(wave, Qt.MouseButton.LeftButton, pos=QPoint(250, 50))   # 2.5 s
+        QTest.mouseMove(wave, QPoint(750, 50))                                   # 3.5 s
+        QTest.mouseRelease(wave, Qt.MouseButton.LeftButton, pos=QPoint(750, 50))
+        self.assertEqual(spans[-1], (2.5, 1.0))
+        jumps = []
+        wave.seek.connect(jumps.append)
+        QTest.mouseClick(wave, Qt.MouseButton.LeftButton, pos=QPoint(500, 50))   # a click jumps, no selection
+        self.assertEqual(round(jumps[-1], 1), 3.0)
+        self.assertEqual(spans[-1], (2.5, 1.0))
         Android.refresh = lambda *_: None
         window = Window()
         played = []

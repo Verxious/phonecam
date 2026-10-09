@@ -2,9 +2,10 @@
 from dataclasses import replace
 from pathlib import Path
 import subprocess
+import time
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QShortcut
 from PySide6.QtWidgets import (QAbstractButton, QCheckBox, QColorDialog, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox,
     QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
@@ -76,8 +77,9 @@ class Peaks(QThread):
 
 
 class Waveform(QWidget):
-    """Drag across the wave to choose what plays; drag the edges to adjust."""
+    """Drag across the wave to choose what plays; drag the edges to adjust; click to jump."""
     changed = Signal(float, float)  # start, length
+    seek = Signal(float)            # a plain click: listen from here
 
     def __init__(self, total, start, length, accent, parent=None):
         super().__init__(parent)
@@ -87,6 +89,9 @@ class Waveform(QWidget):
         self.peaks = np.zeros(0, np.float32)
         self.cursor = None
         self.drag = None
+        self.pressed_at = None
+        self.playhead = None
+        self.view = (0.0, self.total)  # visible seconds; the mouse wheel zooms
         self.setMinimumHeight(110)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.IBeamCursor)
@@ -100,10 +105,29 @@ class Waveform(QWidget):
         self.update()
 
     def x_of(self, seconds):
-        return seconds / self.total * self.width()
+        low, high = self.view
+        return (seconds - low) / max(high - low, 1e-6) * self.width()
 
     def seconds_at(self, x):
-        return min(max(x / max(self.width(), 1) * self.total, 0.0), self.total)
+        low, high = self.view
+        return min(max(low + x / max(self.width(), 1) * (high - low), 0.0), self.total)
+
+    def wheelEvent(self, event):
+        low, high = self.view
+        anchor = self.seconds_at(event.position().x())
+        factor = 0.8 if event.angleDelta().y() > 0 else 1.25
+        span = min(max((high - low) * factor, min(1.0, self.total)), self.total)
+        fraction = (anchor - low) / max(high - low, 1e-6)
+        low = min(max(anchor - span * fraction, 0.0), self.total - span)
+        self.view = (low, low + span)
+        self.update()
+
+    def show_span(self, start, length):
+        """Zoom so the chosen part fills most of the view."""
+        span = min(self.total, max(length * 2, 2.0))
+        low = min(max(start + length / 2 - span / 2, 0.0), self.total - span)
+        self.view = (low, low + span)
+        self.update()
 
     def paintEvent(self, _):
         painter = QPainter(self)
@@ -115,7 +139,12 @@ class Waveform(QWidget):
         painter.fillRect(QRectF(left, 0, max(2.0, right - left), area.height()), QColor(self.accent.red(), self.accent.green(), self.accent.blue(), 45))
         if self.peaks.size:
             width = int(area.width())
-            points = np.interp(np.linspace(0, self.peaks.size - 1, max(width, 2)), np.arange(self.peaks.size), self.peaks)
+            low, high = self.view
+            # 100 envelope points per second; take the visible stretch.
+            first = min(int(low * 100), self.peaks.size - 1)
+            last = max(first + 2, min(int(np.ceil(high * 100)), self.peaks.size))
+            visible = self.peaks[first:last]
+            points = np.interp(np.linspace(0, visible.size - 1, max(width, 2)), np.arange(visible.size), visible)
             for x, value in enumerate(points):
                 inside = left <= x <= right
                 painter.setPen(QPen(self.accent if inside else QColor('#3d4655'), 1))
@@ -128,14 +157,33 @@ class Waveform(QWidget):
         for edge in (left, right):
             painter.drawLine(QPointF(edge, 0), QPointF(edge, area.height()))
         painter.setPen(QColor('#a4aebd'))
-        painter.drawText(QRectF(4, 2, 200, 16), Qt.AlignmentFlag.AlignLeft, clock(self.start))
-        painter.drawText(QRectF(area.width() - 204, 2, 200, 16), Qt.AlignmentFlag.AlignRight, clock(self.total))
+        low, high = self.view
+        painter.drawText(QRectF(4, 2, 200, 16), Qt.AlignmentFlag.AlignLeft, clock(low))
+        zoomed = high - low < self.total - 0.01
+        painter.drawText(QRectF(area.width() - 204, 2, 200, 16), Qt.AlignmentFlag.AlignRight, clock(high) + (' · zoom' if zoomed else ''))
         if self.cursor is not None:
-            painter.setPen(QPen(QColor('#ffffff'), 1, Qt.PenStyle.DashLine))
+            painter.setPen(QPen(QColor(255, 255, 255, 110), 1, Qt.PenStyle.DashLine))
             painter.drawLine(QPointF(self.cursor, 0), QPointF(self.cursor, area.height()))
+        if self.playhead is not None:
+            x = self.x_of(self.playhead)
+            painter.setPen(QPen(QColor('#ffffff'), 2))
+            painter.drawLine(QPointF(x, 0), QPointF(x, area.height()))
+            painter.setBrush(QColor('#ffffff'))
+            painter.drawPolygon([QPointF(x - 6, 0), QPointF(x + 6, 0), QPointF(x, 8)])
+
+    def set_playhead(self, seconds):
+        self.playhead = seconds
+        low, high = self.view
+        if seconds is not None and not low <= seconds <= high:
+            # Zoomed in and the music moved on: follow it.
+            span = high - low
+            low = min(max(seconds - span * 0.1, 0.0), self.total - span)
+            self.view = (low, low + span)
+        self.update()
 
     def mousePressEvent(self, event):
         x = event.position().x()
+        self.pressed_at = x
         left, right = self.x_of(self.start), self.x_of(self.start + self.length)
         if abs(x - left) < 8:
             self.drag = ('start', None)
@@ -150,6 +198,9 @@ class Waveform(QWidget):
         left, right = self.x_of(self.start), self.x_of(self.start + self.length)
         near_edge = abs(x - left) < 8 or abs(x - right) < 8
         self.setCursor(Qt.CursorShape.SizeHorCursor if near_edge or (self.drag and self.drag[0] != 'new') else Qt.CursorShape.IBeamCursor)
+        if self.drag and self.drag[0] == 'new' and abs(x - (self.pressed_at or x)) < 4:
+            self.update()
+            return  # Not a drag yet: may still be a click to jump.
         if self.drag:
             seconds = self.seconds_at(x)
             end = self.start + self.length
@@ -165,8 +216,12 @@ class Waveform(QWidget):
             self.changed.emit(self.start, self.length)
         self.update()
 
-    def mouseReleaseEvent(self, _):
+    def mouseReleaseEvent(self, event):
+        x = event.position().x()
+        if self.drag and self.drag[0] == 'new' and abs(x - (self.pressed_at or x)) < 4:
+            self.seek.emit(self.seconds_at(x))
         self.drag = None
+        self.pressed_at = None
 
     def leaveEvent(self, _):
         self.cursor = None
@@ -191,8 +246,35 @@ class SoundEditor(QDialog):
         self.wave = Waveform(self.total or item.start + item.length, item.start, item.length, self.accent)
         self.wave.changed.connect(self.wave_changed)
         layout.addWidget(self.wave)
-        hint = QLabel('Σύρε πάνω στο κύμα για να διαλέξεις τι παίζει · σύρε τις άκρες για διόρθωση')
+        transport = QHBoxLayout()
+        self.play_button = QPushButton('▶ Play')
+        self.play_button.setToolTip('Ακούς όλο τον ήχο από τη λευκή γραμμή (Space)')
+        self.play_button.clicked.connect(self.play_pause)
+        stop = QPushButton('■ Stop')
+        stop.clicked.connect(self.stop_listening)
+        self.clock = QLabel()
+        self.clock.setMinimumWidth(120)
+        mark_in = QPushButton('⟦ Αρχή εδώ')
+        mark_in.setToolTip('Το κομμάτι ξεκινά από εκεί που ακούς τώρα')
+        mark_in.clicked.connect(self.mark_in)
+        mark_out = QPushButton('Τέλος εδώ ⟧')
+        mark_out.setToolTip('Το κομμάτι τελειώνει εκεί που ακούς τώρα')
+        mark_out.clicked.connect(self.mark_out)
+        zoom_in = QPushButton('🔍 Επιλογή')
+        zoom_in.setToolTip('Zoom στο κομμάτι που διάλεξες (ή ροδέλα πάνω στο κύμα)')
+        zoom_in.clicked.connect(lambda: self.wave.show_span(self.start.value(), self.length.value()))
+        zoom_out = QPushButton('Όλο')
+        zoom_out.setToolTip('Δείξε όλο τον ήχο')
+        zoom_out.clicked.connect(lambda: (setattr(self.wave, 'view', (0.0, self.wave.total)), self.wave.update()))
+        for widget in (self.play_button, stop, self.clock, zoom_in, zoom_out):
+            transport.addWidget(widget)
+        transport.addStretch()
+        transport.addWidget(mark_in)
+        transport.addWidget(mark_out)
+        layout.addLayout(transport)
+        hint = QLabel('Play για να ακούσεις · κλικ στο κύμα = πήγαινε εκεί · σύρε = διάλεξε κομμάτι · ροδέλα = zoom · «Αρχή/Τέλος εδώ» την ώρα που ακούς')
         hint.setObjectName('muted')
+        hint.setWordWrap(True)
         layout.addWidget(hint)
         form = QFormLayout()
         times = QHBoxLayout()
@@ -229,7 +311,7 @@ class SoundEditor(QDialog):
         self.span = QLabel()
         self.span.setObjectName('muted')
         layout.addWidget(self.span)
-        preview = QPushButton('▶ Δοκιμή (μόνο στα ηχεία σου)')
+        preview = QPushButton('▶ Δοκιμή επιλογής (μόνο στα ηχεία σου)')
         preview.clicked.connect(self.preview)
         layout.addWidget(preview)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -244,6 +326,106 @@ class SoundEditor(QDialog):
         self.peaks = Peaks(item.path, self)
         self.peaks.ready.connect(self.wave.set_peaks)
         self.peaks.start()
+        # Listening: where the playhead is, and when playback from there began.
+        self.position = item.start
+        self.listening_since = None
+        self.wave.seek.connect(self.jump)
+        self.player.stopped.connect(self.playback_stopped)
+        self.ticker = QTimer(self)
+        self.ticker.timeout.connect(self.tick)
+        self.wave.set_playhead(self.position)
+        self.update_clock()
+        space = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
+        space.activated.connect(self.space)
+
+    # -- listening ---------------------------------------------------------------------
+
+    def now(self):
+        if self.listening_since is None:
+            return self.position
+        return min(self.position + time.monotonic() - self.listening_since, self.total or 1e9)
+
+    def update_clock(self):
+        self.clock.setText(f'{clock(self.now())} / {clock(self.total)}')
+
+    def listen_from(self, seconds):
+        self.position = max(0.0, min(seconds, max(0.0, (self.total or seconds) - 0.05)))
+        remaining = (self.total - self.position) if self.total else 600
+        whole = replace(self.selected(), identifier='listen', start=self.position, length=max(0.05, remaining), loop=False)
+        self.player.stop('preview')
+        self.player.play(whole, to_mic=False)
+        self.listening_since = time.monotonic()
+        self.play_button.setText('❚❚ Pause')
+        self.ticker.start(30)
+
+    def play_pause(self):
+        if self.listening_since is not None:
+            self.position = self.now()
+            self.listening_since = None
+            self.player.stop('listen')
+            self.play_button.setText('▶ Play')
+            self.ticker.stop()
+        else:
+            if self.total and self.position >= self.total - 0.05:
+                self.position = 0.0
+            self.listen_from(self.position)
+        self.wave.set_playhead(self.position)
+        self.update_clock()
+
+    def stop_listening(self):
+        self.listening_since = None
+        self.player.stop('listen')
+        self.play_button.setText('▶ Play')
+        self.ticker.stop()
+        self.position = self.start.value()
+        self.wave.set_playhead(self.position)
+        self.update_clock()
+
+    def jump(self, seconds):
+        if self.listening_since is not None:
+            self.listen_from(seconds)
+        else:
+            self.position = seconds
+        self.wave.set_playhead(self.position)
+        self.update_clock()
+
+    def tick(self):
+        self.wave.set_playhead(self.now())
+        self.update_clock()
+
+    def playback_stopped(self, identifier):
+        if identifier == 'listen' and self.listening_since is not None:
+            # Reached the end of the file.
+            self.position = self.now()
+            self.listening_since = None
+            self.play_button.setText('▶ Play')
+            self.ticker.stop()
+            self.wave.set_playhead(self.position)
+            self.update_clock()
+
+    def mark_in(self):
+        here = self.now()
+        end = self.start.value() + self.length.value()
+        self.start.setValue(round(here, 1))
+        if end > here + 0.2:
+            self.length.setValue(round(end - here, 1))
+
+    def mark_out(self):
+        here = self.now()
+        if here - self.start.value() >= 0.2:
+            self.length.setValue(round(here - self.start.value(), 1))
+        else:
+            self.status_hint('Το τέλος πρέπει να είναι μετά την αρχή.')
+
+    def status_hint(self, text):
+        self.span.setText(text)
+
+    def space(self):
+        # Space is play/pause everywhere in the editor, except while typing the name.
+        if self.name.hasFocus():
+            self.name.insert(' ')
+        else:
+            self.play_pause()
 
     def wave_changed(self, start, length):
         for box, value in ((self.start, start), (self.length, length)):
@@ -282,10 +464,19 @@ class SoundEditor(QDialog):
             length=self.length.value(), volume=self.volume.value(), loop=self.loop.isChecked())
 
     def preview(self):
+        if self.listening_since is not None:
+            self.play_pause()
         self.player.play(replace(self.selected(), identifier='preview', loop=False), to_mic=False)
 
     def done(self, result):
+        self.ticker.stop()
+        self.listening_since = None
         self.player.stop('preview')
+        self.player.stop('listen')
+        try:
+            self.player.stopped.disconnect(self.playback_stopped)
+        except (RuntimeError, TypeError):
+            pass
         if self.peaks.isRunning():
             self.peaks.wait(3000)
         super().done(result)
