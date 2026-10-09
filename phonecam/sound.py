@@ -13,9 +13,10 @@ import uuid
 import numpy as np
 from PySide6.QtCore import QObject, QProcess, QThread, Signal
 
-SOUNDS_SINK = 'phonecam_sounds'
-MIX_SINK = 'phonecam_mix'
-MIC = 'phonecam_mic'
+PREFIX = 'phonecam_'
+SOUNDS_SINK = PREFIX + 'sounds'
+MIX_SINK = PREFIX + 'mix'
+MIC = PREFIX + 'mic'
 
 
 @dataclass
@@ -54,7 +55,7 @@ def ours():
     ids = []
     for line in result.stdout.splitlines():
         parts = line.split('\t')
-        if len(parts) >= 3 and 'phonecam_' in parts[2]:
+        if len(parts) >= 3 and PREFIX in parts[2]:
             ids.append(parts[0])
     return ids
 
@@ -63,40 +64,125 @@ def default_source():
     result = pactl('get-default-source')
     name = result.stdout.strip()
     # Never loop our own microphone back into itself.
-    return '' if not name or name.startswith('phonecam_') else name
+    return '' if not name or name.startswith(PREFIX) else name
+
+
+def microphones():
+    """Real capture devices: (node name, description). Monitors and our own are left out."""
+    result = pactl('list', 'sources')
+    found, name = [], None
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith('Name: '):
+            name = line[6:]
+        elif line.startswith('Description: ') and name:
+            if not name.endswith('.monitor') and not name.startswith(PREFIX):
+                found.append((name, line[13:]))
+            name = None
+    return found
+
+
+def module_ids():
+    """{module id: arguments} for everything PhoneCam loaded."""
+    result = pactl('list', 'short', 'modules')
+    modules = {}
+    for line in result.stdout.splitlines():
+        parts = line.split('\t')
+        if len(parts) >= 3 and PREFIX in parts[2]:
+            modules[parts[0]] = parts[2]
+    return modules
+
+
+def ours():
+    """Module ids PhoneCam loaded (also ones left behind by a crash)."""
+    return list(module_ids())
 
 
 class Router:
-    """Creates and removes the virtual microphone."""
+    """The virtual microphone. Its devices stay put while options change, so apps
+    recording from «PhoneCam Mic» (Discord) never lose it and fall back elsewhere."""
 
     def __init__(self):
         self.active = False
+        self.voice = ''
+        self.hear = False
 
-    def start(self, with_voice=True, hear_myself=True):
-        self.stop()
-        voice = default_source() if with_voice else ''
-        loads = [
-            ['module-null-sink', f'sink_name={SOUNDS_SINK}', 'sink_properties=device.description="PhoneCam Sounds"'],
-            ['module-null-sink', f'sink_name={MIX_SINK}', 'sink_properties=device.description="PhoneCam Mix"'],
-            ['module-loopback', f'source={SOUNDS_SINK}.monitor', f'sink={MIX_SINK}', 'latency_msec=20', 'source_dont_move=true', 'sink_dont_move=true'],
-        ]
-        if voice:
-            loads.append(['module-loopback', f'source={voice}', f'sink={MIX_SINK}', 'latency_msec=20', 'sink_dont_move=true'])
-        if hear_myself:
-            loads.append(['module-loopback', f'source={SOUNDS_SINK}.monitor', 'latency_msec=40', 'source_dont_move=true'])
-        loads.append(['module-remap-source', f'master={MIX_SINK}.monitor', f'source_name={MIC}', 'source_properties=device.description="PhoneCam Mic"'])
-        for module in loads:
-            result = pactl('load-module', *module)
-            if result.returncode != 0:
-                self.stop()
-                raise RuntimeError(result.stderr.strip() or 'δεν φορτώθηκε ' + module[0])
-        self.active = True
+    def load(self, *arguments):
+        result = pactl('load-module', *arguments)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or 'δεν φορτώθηκε ' + arguments[0])
+        return result.stdout.strip()
+
+    def base(self):
+        """Sinks, the sounds→mix link and the microphone itself, if not there yet."""
+        present = ' '.join(module_ids().values())
+        if f'sink_name={SOUNDS_SINK}' not in present:
+            # Quoting: the whole property list in "…", the spaced value in '…'.
+            self.load('module-null-sink', f'sink_name={SOUNDS_SINK}', 'sink_properties="device.description=\'PhoneCam Sounds\'"')
+        if f'sink_name={MIX_SINK}' not in present:
+            self.load('module-null-sink', f'sink_name={MIX_SINK}', 'sink_properties="device.description=\'PhoneCam Mix\'"')
+        if f'source={SOUNDS_SINK}.monitor sink={MIX_SINK}' not in present:
+            self.load('module-loopback', f'source={SOUNDS_SINK}.monitor', f'sink={MIX_SINK}', 'latency_msec=20', 'source_dont_move=true', 'sink_dont_move=true')
+        if f'source_name={MIC}' not in present:
+            self.load('module-remap-source', f'master={MIX_SINK}.monitor', f'source_name={MIC}', 'source_properties="device.description=\'PhoneCam Mic\'"')
+
+    def links(self):
+        """Ids of the optional links: your voice into the mix, and the pads to your speakers."""
+        voice, hear = [], []
+        result = pactl('list', 'short', 'modules')
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) < 3 or parts[1] != 'module-loopback':
+                continue
+            if f'sink={MIX_SINK}' in parts[2] and f'source={SOUNDS_SINK}.monitor' not in parts[2]:
+                voice.append(parts[0])
+            elif f'source={SOUNDS_SINK}.monitor' in parts[2] and f'sink={MIX_SINK}' not in parts[2]:
+                hear.append(parts[0])
+        return voice, hear
+
+    def start(self, voice_source=None, hear_myself=True):
+        """Create (or adjust) the microphone. ``voice_source``: device name, '' for none,
+        None for the system default. Returns the voice device used."""
+        self.base()
+        voice = default_source() if voice_source is None else voice_source
+        if voice.startswith(PREFIX):
+            voice = ''
+        voice_links, hear_links = self.links()
+        if voice != self.voice or not self.active:
+            for identifier in voice_links:
+                pactl('unload-module', identifier)
+            if voice:
+                self.load('module-loopback', f'source={voice}', f'sink={MIX_SINK}', 'latency_msec=20', 'sink_dont_move=true', 'source_dont_move=true')
+        if hear_myself and not hear_links:
+            self.load('module-loopback', f'source={SOUNDS_SINK}.monitor', 'latency_msec=40', 'source_dont_move=true')
+        elif not hear_myself:
+            for identifier in hear_links:
+                pactl('unload-module', identifier)
+        self.voice, self.hear, self.active = voice, hear_myself, True
+        self.reattach()
         return voice
+
+    def reattach(self):
+        """Streams that asked for «PhoneCam Mic» but ended up elsewhere go back to it."""
+        result = pactl('list', 'source-outputs')
+        current, source = None, None
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if line.startswith('Source Output #'):
+                current, source = line.split('#', 1)[1], None
+            elif line.startswith('Source: '):
+                source = line[8:]
+            elif current and line == f'target.object = "{MIC}"':
+                mine = pactl('list', 'short', 'sources').stdout
+                mic_id = next((row.split('\t')[0] for row in mine.splitlines() if f'\t{MIC}\t' in row), None)
+                if mic_id and source != mic_id:
+                    pactl('move-source-output', current, MIC)
 
     def stop(self):
         for module in reversed(ours()):
             pactl('unload-module', module)
         self.active = False
+        self.voice = ''
 
 
 class Meter(QThread):

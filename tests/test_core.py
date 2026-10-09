@@ -356,6 +356,38 @@ class BackgroundTests(unittest.TestCase):
         self.assertEqual(played, ['pad 12'])
         window.engine.close()
 
+    def test_virtual_mic_survives_option_changes(self):
+        import time
+        from unittest import mock
+        from phonecam import sound
+        if not sound.available():
+            self.skipTest('no PulseAudio/PipeWire here')
+        names = {'PREFIX': 'pcamt_', 'SOUNDS_SINK': 'pcamt_sounds', 'MIX_SINK': 'pcamt_mix', 'MIC': 'pcamt_mic'}
+        with mock.patch.multiple(sound, **names):   # never touch a live «PhoneCam Mic»
+            router = sound.Router()
+            recorder = None
+            try:
+                router.start('', hear_myself=False)
+                recorder = subprocess.Popen(['parec', '--device=pcamt_mic', '--client-name=pcamt-recorder'], stdout=subprocess.DEVNULL)
+                time.sleep(0.8)
+                mic = lambda: next(i for i, a in sound.module_ids().items() if 'source_name=pcamt_mic' in a)
+                before = mic()
+                router.start('', hear_myself=True)
+                self.assertEqual(mic(), before)          # options never recreate the microphone
+                sound.pactl('unload-module', before)     # if it vanishes anyway…
+                time.sleep(0.5)
+                router.start('', hear_myself=True)       # …it comes back and recorders follow it
+                time.sleep(0.5)
+                mic_id = next(r.split('\t')[0] for r in sound.pactl('list', 'short', 'sources').stdout.splitlines() if '\tpcamt_mic\t' in r)
+                block = next(b for b in sound.pactl('list', 'source-outputs').stdout.split('\n\n') if 'pcamt-recorder' in b)
+                self.assertIn(f'Source: {mic_id}', block)
+                self.assertTrue(any('PhoneCam Mic' in line for line in sound.pactl('list', 'sources').stdout.splitlines()))
+            finally:
+                if recorder:
+                    recorder.kill()
+                router.stop()
+                self.assertEqual(sound.ours(), [])
+
     def test_matte_and_preview_shapes(self):
         frame = np.full((360, 640, 3), 90, np.uint8)
         alpha = Matte(640, 360)(frame)

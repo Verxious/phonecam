@@ -6,7 +6,7 @@ import time
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QShortcut
-from PySide6.QtWidgets import (QAbstractButton, QCheckBox, QColorDialog, QDialog, QDialogButtonBox, QDoubleSpinBox,
+from PySide6.QtWidgets import (QAbstractButton, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMenu, QMessageBox,
     QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget)
 from . import scene, sound, youtube
@@ -693,13 +693,15 @@ class SoundboardPage(QWidget):
         layout.addLayout(meter_row)
         self.meter_thread = None
         options = QHBoxLayout()
-        self.voice = QCheckBox('Η φωνή μου μαζί')
+        options.addWidget(QLabel('Η φωνή μου από'))
+        self.voice = QComboBox()
+        self.voice.setToolTip('Το μικρόφωνο που μιλάς· μπαίνει στο «PhoneCam Mic» μαζί με τους ήχους.')
+        self.voice.activated.connect(self.voice_changed)
+        options.addWidget(self.voice, 1)
         self.hear = QCheckBox('Ακούω κι εγώ τους ήχους')
-        for box, key in ((self.voice, 'sound_voice'), (self.hear, 'sound_hear')):
-            box.setChecked(bool(window.preferences.data.get(key, True)))
-            box.toggled.connect(lambda checked, key=key: self.option_changed(key, checked))
-            options.addWidget(box)
-        options.addStretch()
+        self.hear.setChecked(bool(window.preferences.data.get('sound_hear', True)))
+        self.hear.toggled.connect(lambda checked: self.option_changed('sound_hear', checked))
+        options.addWidget(self.hear)
         layout.addLayout(options)
         self.hint = QLabel('')
         self.hint.setObjectName('muted')
@@ -746,7 +748,29 @@ class SoundboardPage(QWidget):
             self.meter_thread = None
             self.meter.set_level(0)
 
+    def fill_microphones(self):
+        chosen = self.window.voice_source()
+        self.voice.blockSignals(True)
+        self.voice.clear()
+        self.voice.addItem('Κανένα · μόνο οι ήχοι', '')
+        for name, description in sound.microphones():
+            self.voice.addItem(description, name)
+        index = self.voice.findData(chosen)
+        if index < 0 and chosen:
+            self.voice.addItem(f'{chosen} (δεν είναι συνδεδεμένο)', chosen)
+            index = self.voice.count() - 1
+        self.voice.setCurrentIndex(max(0, index))
+        self.voice.blockSignals(False)
+
+    def voice_changed(self):
+        self.window.preferences.data['sound_voice_source'] = self.voice.currentData() or ''
+        self.window.preferences.save()
+        if self.window.router.active:
+            self.toggle_mic(True)
+
     def update_mic(self):
+        if sound.available():
+            self.fill_microphones()
         self.update_meter()
         active = self.window.router.active
         self.air.setChecked(active)
@@ -766,9 +790,7 @@ class SoundboardPage(QWidget):
     def toggle_mic(self, checked):
         try:
             if checked:
-                voice = self.window.router.start(self.voice.isChecked(), self.hear.isChecked())
-                if self.voice.isChecked() and not voice:
-                    self.status.setText('Δεν βρέθηκε προεπιλεγμένο μικρόφωνο· ακούγονται μόνο οι ήχοι.')
+                self.window.router.start(self.window.voice_source(), self.hear.isChecked())
             else:
                 self.player.stop_all()
                 self.window.router.stop()

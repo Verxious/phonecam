@@ -814,10 +814,18 @@ class Window(QMainWindow):
         self.router.stop()  # Remove anything a crashed run left behind.
         if self.preferences.data.get('sound_mic'):
             try:
-                self.router.start(self.preferences.data.get('sound_voice', True), self.preferences.data.get('sound_hear', True))
+                self.router.start(self.voice_source(), self.preferences.data.get('sound_hear', True))
             except (OSError, RuntimeError):
                 pass
         self.soundboard.update_mic()
+
+    def voice_source(self):
+        """The microphone you speak into (device name; '' = none). Chosen once, remembered."""
+        if 'sound_voice_source' in self.preferences.data:
+            return self.preferences.data['sound_voice_source']
+        if self.preferences.data.get('sound_voice') is False:
+            return ''
+        return sound.default_source()
 
     def save_sounds(self):
         self.preferences.data['sounds'] = [item.to_dict() for item in self.sounds]
