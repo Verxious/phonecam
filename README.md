@@ -72,11 +72,13 @@ If Discord displays an error about setting the video background, select **Video 
 
 ## Soundboard
 
-**🔊 Soundboard** plays sounds into calls. Add a sound from a link (YouTube or any site yt-dlp supports; only the audio is downloaded) or from a file, then choose where it starts and how many seconds it plays, its volume, and whether it repeats behind your voice until stopped. **▶ Δοκιμή** previews on your own speakers.
+The **🎛 Soundboard** tab sits next to **📷 Κάμερα**; both keep running while you switch. Sounds are colour pads that light up and show their progress while playing; loops (🔁) keep going behind your voice until stopped. Keys **1–0, Q–P, A–L, Z–M** play the pads by key position, so they work with a Greek keyboard layout too; **Esc** or **■ STOP** stops everything. **Master ένταση** scales all pads.
 
-**Μικρόφωνο για Discord** creates a virtual microphone, «PhoneCam Mic», that carries your voice (optional) plus the sounds; select it as the input device in Discord. **Ακούω κι εγώ τους ήχους** also plays them on your speakers. Uses PulseAudio or PipeWire through `pactl`/`paplay` (pulseaudio-utils, or libpulse on Arch). The microphone is removed when PhoneCam closes and comes back the next time it starts. Turn off Discord's noise suppression for music, otherwise it filters the sounds out.
+Add a pad from a link (YouTube or any site yt-dlp supports; only the audio is downloaded) or from a file. In its editor drag across the **waveform** to choose what plays (drag the edges to adjust, or type exact seconds), set volume, repeat and pad colour, and **▶ Δοκιμή** on your own speakers. Right click a pad to edit, move or remove it.
 
-Removing a sound deletes its downloaded audio; your own files are never touched.
+**ON AIR** creates a virtual microphone, «PhoneCam Mic», carrying your voice (optional) plus the pads; select it as the input device in Discord. **Ακούω κι εγώ τους ήχους** also plays them on your speakers. Uses PulseAudio or PipeWire through `pactl`/`paplay` (pulseaudio-utils, or libpulse on Arch). The microphone is removed when PhoneCam closes and comes back the next time it starts. Turn off Discord's noise suppression for music, otherwise it filters the sounds out.
+
+Removing a pad deletes its downloaded audio; your own files are never touched.
 
 ## Development
 

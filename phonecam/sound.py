@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 import re
 import shutil
 import subprocess
+import time
 import uuid
 from PySide6.QtCore import QObject, QProcess, Signal
 
@@ -25,6 +26,7 @@ class Sound:
     volume: int = 100        # percent
     loop: bool = False       # keeps playing behind your voice until stopped
     link: str = ''
+    color: str = ''          # pad colour; empty = from the palette by position
     identifier: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
     def to_dict(self):
@@ -104,6 +106,16 @@ class Player(QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.playing = {}
+        self.timing = {}   # identifier -> (started, length, loop) for progress on the pads
+        self.master = 100  # percent, applied when a sound starts
+
+    def progress(self, identifier):
+        """0..1 through the clip (loops wrap around), or None when not playing."""
+        if identifier not in self.timing:
+            return None
+        started, length, loop = self.timing[identifier]
+        elapsed = (time.monotonic() - started) / max(length, 0.05)
+        return elapsed % 1 if loop else min(elapsed, 1.0)
 
     def play(self, sound, to_mic=True):
         self.stop(sound.identifier)
@@ -115,7 +127,7 @@ class Player(QObject):
             arguments += ['-ss', f'{sound.start:.3f}']
         # Input options: read only the chosen part of the file.
         arguments += ['-t', f'{sound.length:.3f}', '-i', sound.path, '-vn']
-        filters = [f'volume={sound.volume / 100:.2f}', 'aresample=48000']
+        filters = [f'volume={sound.volume * self.master / 10000:.3f}', 'aresample=48000']
         if sound.loop:
             # Hold that part in memory and repeat it until stopped.
             filters.append(f'aloop=loop=-1:size={max(1, int(sound.length * 48000))}')
@@ -127,6 +139,7 @@ class Player(QObject):
         decoder.setStandardOutputProcess(output)
         output.finished.connect(lambda *_: self.finished(sound.identifier, decoder, output))
         self.playing[sound.identifier] = (decoder, output)
+        self.timing[sound.identifier] = (time.monotonic(), sound.length, sound.loop)
         output.start('paplay', playback)
         decoder.start('ffmpeg', arguments)
         self.started.emit(sound.identifier)
@@ -134,12 +147,14 @@ class Player(QObject):
     def finished(self, identifier, decoder, output):
         if self.playing.get(identifier) == (decoder, output):
             del self.playing[identifier]
+            self.timing.pop(identifier, None)
             self.stopped.emit(identifier)
         decoder.deleteLater()
         output.deleteLater()
 
     def stop(self, identifier):
         pair = self.playing.pop(identifier, None)
+        self.timing.pop(identifier, None)
         if pair:
             for process in pair:
                 process.blockSignals(True)

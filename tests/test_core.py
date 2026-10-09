@@ -292,6 +292,47 @@ class BackgroundTests(unittest.TestCase):
             self.assertTrue(ended)
             self.assertLess(ended[0] - started, 3)  # 0.6 s of a 10 s file, not the whole file
 
+    def test_soundboard_waveform_drag_and_pad_keys(self):
+        from PySide6.QtCore import QPoint, Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QApplication
+        from phonecam import sound, soundboard
+        from phonecam.android import Android
+        from phonecam.app import Window
+        app = QApplication.instance() or QApplication([])
+        wave = soundboard.Waveform(10.0, 0.0, 5.0, '#ff4d6d')
+        wave.resize(1000, 100)
+        spans = []
+        wave.changed.connect(lambda start, length: spans.append((round(start, 1), round(length, 1))))
+        QTest.mousePress(wave, Qt.MouseButton.LeftButton, pos=QPoint(200, 50))   # 2.0 s
+        QTest.mouseMove(wave, QPoint(450, 50))                                   # 4.5 s
+        QTest.mouseRelease(wave, Qt.MouseButton.LeftButton, pos=QPoint(450, 50))
+        self.assertEqual(spans[-1], (2.0, 2.5))
+        QTest.mousePress(wave, Qt.MouseButton.LeftButton, pos=QPoint(451, 50))   # grab the right edge
+        QTest.mouseMove(wave, QPoint(700, 50))
+        QTest.mouseRelease(wave, Qt.MouseButton.LeftButton, pos=QPoint(700, 50))
+        self.assertEqual(spans[-1], (2.0, 5.0))
+        Android.refresh = lambda *_: None
+        window = Window()
+        played = []
+        window.player.play = lambda item, to_mic=True: played.append(item.name)
+        window.sounds = [sound.Sound('πρώτος', '/x.ogg'), sound.Sound('δεύτερος', '/y.ogg')]
+        window.soundboard.rebuild()
+        window.show_tab(1)
+        QTest.keyClick(window.soundboard, Qt.Key.Key_2)
+        QTest.keyClick(window.soundboard, Qt.Key.Key_1)
+        self.assertEqual(played, ['δεύτερος', 'πρώτος'])
+        # Greek layout: physical key W (scan code 25) types «ς»; it is still pad 12's key.
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+        window.sounds = [sound.Sound(f'pad {number}', '/x.ogg') for number in range(1, 13)]
+        window.soundboard.rebuild()
+        played.clear()
+        event = QKeyEvent(QEvent.Type.KeyPress, 0, Qt.KeyboardModifier.NoModifier, 25, 0, 0, 'ς')
+        app.sendEvent(window.soundboard, event)
+        self.assertEqual(played, ['pad 12'])
+        window.engine.close()
+
     def test_matte_and_preview_shapes(self):
         frame = np.full((360, 640, 3), 90, np.uint8)
         alpha = Matte(640, 360)(frame)

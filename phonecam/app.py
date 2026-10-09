@@ -10,7 +10,7 @@ from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
-    QSizePolicy, QSlider, QSpinBox, QSplitter, QVBoxLayout, QWidget)
+    QSizePolicy, QSlider, QSpinBox, QSplitter, QStackedWidget, QVBoxLayout, QWidget)
 from . import diagnostics, driver, library, sound, soundboard, scene, updater, weights, youtube
 from .android import Android
 from .config import Preferences
@@ -156,7 +156,7 @@ class Window(QMainWindow):
         self.player = sound.Player(self)
         self.router = sound.Router()
         self.sounds = [sound.Sound.from_dict(item) for item in self.preferences.data.get('sounds', []) if Path(item.get('path', '')).is_file()]
-        self.soundboard_window = None
+
         library.TITLES.update(self.preferences.data.get('titles', {}))
         self.setWindowTitle('PhoneCam')
         self.setWindowIcon(QIcon(str(ROOT / 'assets' / 'phonecam.svg')))
@@ -174,6 +174,13 @@ class Window(QMainWindow):
             QPushButton#connect { background: #66d8c4; color: #10221f; font-weight: 600; }
             QPushButton:disabled, QComboBox:disabled { color: #76818f; }
             QPushButton#connect:disabled { background: #2b3a39; color: #76818f; }
+            QPushButton#tab { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 14px; font-size: 15px; color: #a4aebd; }
+            QPushButton#tab:checked { color: #edf0f6; border-bottom: 2px solid #61d6c4; }
+            QPushButton#tab:hover { color: #edf0f6; }
+            QPushButton#onair { font-size: 15px; font-weight: 600; letter-spacing: 1px; }
+            QPushButton#onair:checked { background: #b3261e; border-color: #ff6b6b; color: #ffffff; }
+            QPushButton#stopall { background: #3a1d22; border-color: #7a2e38; color: #ff9aa5; font-weight: 600; font-size: 15px; }
+            QPushButton#stopall:hover { background: #5a232c; }
             QListWidget { background: #12151b; border: 1px solid #303745; border-radius: 8px; padding: 4px; outline: 0; }
             QListWidget::item { padding: 6px; border-radius: 6px; color: #edf0f6; }
             QListWidget::item:hover { background: #1d232d; }
@@ -197,6 +204,16 @@ class Window(QMainWindow):
         title = QLabel('PhoneCam')
         title.setObjectName('title')
         title_row.addWidget(title)
+        title_row.addSpacing(24)
+        # Two full tabs: the camera and the soundboard (both keep running in the background).
+        self.tabs = []
+        for index, text in enumerate(('📷 Κάμερα', '🎛 Soundboard')):
+            tab = QPushButton(text)
+            tab.setObjectName('tab')
+            tab.setCheckable(True)
+            tab.clicked.connect(lambda _=False, index=index: self.show_tab(index))
+            title_row.addWidget(tab)
+            self.tabs.append(tab)
         title_row.addStretch()
         self.update_button = QPushButton('Νέα έκδοση · επανεκκίνηση')
         self.update_button.setObjectName('connect')
@@ -208,8 +225,10 @@ class Window(QMainWindow):
         self.badge.setObjectName('muted')
         title_row.addWidget(self.badge)
         outer.addLayout(title_row)
+        self.pages = QStackedWidget()
+        outer.addWidget(self.pages, 1)
         splitter = QSplitter()
-        outer.addWidget(splitter, 1)
+        self.pages.addWidget(splitter)
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 12, 14, 0)
@@ -342,16 +361,16 @@ class Window(QMainWindow):
         self.help.setWordWrap(True)
         self.help.setObjectName('muted')
         panel.addWidget(self.help)
-        sounds = QPushButton('🔊 Soundboard')
-        sounds.setToolTip('Ήχοι από link ή αρχεία, που ακούγονται στο Discord μέσω του «PhoneCam Mic».')
-        sounds.clicked.connect(self.open_soundboard)
         report = QPushButton('Διαγνωστικά · αντιγραφή')
         report.setToolTip('Αντιγράφει πληροφορίες συστήματος για βοήθεια (χωρίς διευθύνσεις ροής ή προσωπικά στοιχεία).')
         report.clicked.connect(self.show_diagnostics)
-        panel.addWidget(sounds)
         panel.addWidget(report)
         splitter.addWidget(right)
         splitter.setSizes([735, 315])
+        self.soundboard = soundboard.SoundboardPage(self)
+        self.soundboard.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.pages.addWidget(self.soundboard)
+        self.show_tab(1 if self.preferences.data.get('tab') == 1 else 0)
         self.source.currentIndexChanged.connect(self.source_changed)
         self.usb.toggled.connect(self.update_fields)
         self.android.devices.connect(self.devices_found)
@@ -796,19 +815,21 @@ class Window(QMainWindow):
                 self.router.start(self.preferences.data.get('sound_voice', True), self.preferences.data.get('sound_hear', True))
             except (OSError, RuntimeError):
                 pass
+        self.soundboard.update_mic()
 
     def save_sounds(self):
         self.preferences.data['sounds'] = [item.to_dict() for item in self.sounds]
         self.preferences.save()
 
-    def open_soundboard(self):
-        # One window for the whole session: downloads and playing sounds survive closing it.
-        if not self.soundboard_window:
-            self.soundboard_window = soundboard.Soundboard(self)
-        self.soundboard_window.update_mic()
-        self.soundboard_window.show()
-        self.soundboard_window.raise_()
-        self.soundboard_window.activateWindow()
+    def show_tab(self, index):
+        self.pages.setCurrentIndex(index)
+        for number, tab in enumerate(self.tabs):
+            tab.setChecked(number == index)
+        self.preferences.data['tab'] = index
+        self.preferences.save()
+        if index == 1:
+            self.soundboard.update_mic()
+            self.soundboard.setFocus()  # Pad keys work right away.
 
     def show_diagnostics(self):
         text = diagnostics.report(self)
