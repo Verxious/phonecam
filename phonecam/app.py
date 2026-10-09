@@ -11,7 +11,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
     QSizePolicy, QSlider, QSpinBox, QSplitter, QVBoxLayout, QWidget)
-from . import diagnostics, driver, library, scene, updater, weights, youtube
+from . import diagnostics, driver, library, sound, soundboard, scene, updater, weights, youtube
 from .android import Android
 from .config import Preferences
 from .engine import CaptureEngine
@@ -30,9 +30,10 @@ class BackgroundJob(QThread):
     done = Signal(object)
     failed = Signal(object, str)
 
-    def __init__(self, capture, parent=None):
+    def __init__(self, capture, quality='normal', parent=None):
         super().__init__(parent)
         self.capture = replace(capture)
+        self.quality = quality
         self.cancelled = False
 
     def run(self):
@@ -43,14 +44,14 @@ class BackgroundJob(QThread):
             if scene.is_video(self.capture.background):
                 scene.seamless(self.capture.background, width, height, self.capture.fps,
                     lambda done, total: self.progress.emit(f'Seamless loop για το βίντεο… {int(done * 100 / total)}%'),
-                    lambda: self.cancelled, self.capture.fit)
+                    lambda: self.cancelled, self.capture.fit, self.quality)
                 self.done.emit(self.capture)
                 return
             model = weights.scene_model(downloading, lambda: self.cancelled)
             self.progress.emit('Ανάλυση εικόνας φόντου…')
             scene.render(self.capture.background, width, height, self.capture.fps, model,
                 lambda done, total: self.progress.emit(f'Προετοιμασία κινούμενου φόντου… {done * 100 // total}%'),
-                lambda: self.cancelled, self.capture.fit)
+                lambda: self.cancelled, self.capture.fit, self.quality)
             self.done.emit(self.capture)
         except InterruptedError:
             pass
@@ -152,6 +153,10 @@ class Window(QMainWindow):
         self.background_job = None
         self.youtube_job = None
         self.library_dialog = None
+        self.player = sound.Player(self)
+        self.router = sound.Router()
+        self.sounds = [sound.Sound.from_dict(item) for item in self.preferences.data.get('sounds', []) if Path(item.get('path', '')).is_file()]
+        self.soundboard_window = None
         library.TITLES.update(self.preferences.data.get('titles', {}))
         self.setWindowTitle('PhoneCam')
         self.setWindowIcon(QIcon(str(ROOT / 'assets' / 'phonecam.svg')))
@@ -163,7 +168,7 @@ class Window(QMainWindow):
             QLabel#title { font-size: 26px; font-weight: 600; }
             QLabel#muted { color: #a4aebd; }
             QLabel#preview { background: #0a0c10; border: 1px solid #303745; border-radius: 12px; }
-            QPushButton, QComboBox, QLineEdit, QSpinBox { background: #252b36; border: 1px solid #3d4655; border-radius: 6px; padding: 8px; }
+            QPushButton, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox { background: #252b36; border: 1px solid #3d4655; border-radius: 6px; padding: 8px; }
             QPushButton:hover { background: #303a48; }
             QPushButton:checked { background: #235651; border-color: #61d6c4; }
             QPushButton#connect { background: #66d8c4; color: #10221f; font-weight: 600; }
@@ -174,6 +179,10 @@ class Window(QMainWindow):
             QListWidget::item:hover { background: #1d232d; }
             QListWidget::item:selected { background: #235651; color: #ffffff; }
             QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
+            QScrollArea { background: #12151b; border: 1px solid #303745; border-radius: 8px; }
+            QWidget#soundgrid { background: #12151b; }
+            QPushButton#sound:checked { background: #235651; border-color: #61d6c4; }
+            QMenu { background: #252b36; border: 1px solid #3d4655; } QMenu::item:selected { background: #326960; }
             QScrollBar::handle:vertical { background: #3d4655; border-radius: 4px; min-height: 30px; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
             QComboBox QAbstractItemView { background: #252b36; selection-background-color: #326960; }
@@ -333,9 +342,13 @@ class Window(QMainWindow):
         self.help.setWordWrap(True)
         self.help.setObjectName('muted')
         panel.addWidget(self.help)
+        sounds = QPushButton('🔊 Soundboard')
+        sounds.setToolTip('Ήχοι από link ή αρχεία, που ακούγονται στο Discord μέσω του «PhoneCam Mic».')
+        sounds.clicked.connect(self.open_soundboard)
         report = QPushButton('Διαγνωστικά · αντιγραφή')
         report.setToolTip('Αντιγράφει πληροφορίες συστήματος για βοήθεια (χωρίς διευθύνσεις ροής ή προσωπικά στοιχεία).')
         report.clicked.connect(self.show_diagnostics)
+        panel.addWidget(sounds)
         panel.addWidget(report)
         splitter.addWidget(right)
         splitter.setSizes([735, 315])
@@ -599,20 +612,35 @@ class Window(QMainWindow):
         self.download_progress('Το βίντεο κατέβηκε· ετοιμάζεται το seamless loop…')
         self.use_background(path)
 
+    def loop_quality(self):
+        return self.preferences.data.get('loop_quality', 'normal')
+
+    def set_loop_quality(self, quality, redo_current):
+        self.preferences.data['loop_quality'] = quality
+        self.preferences.save()
+        capture = self.capture
+        if redo_current and capture.background and capture.motion and Path(capture.background).is_file():
+            width, height = map(int, capture.size.split('x'))
+            mode = scene.resolve_fit(capture.background, capture.fit, width, height)
+            for other in scene.QUALITY:
+                if other != quality:
+                    scene.cache_path(capture.background, width, height, capture.fps, mode, other).unlink(missing_ok=True)
+            self.prepare_background(capture)
+
     def prepare_background(self, capture):
         """Start rendering the loop in the background; the still image is used meanwhile."""
         if not capture.background or not capture.motion or not Path(capture.background).is_file():
             return
         width, height = map(int, capture.size.split('x'))
         mode = scene.resolve_fit(capture.background, capture.fit, width, height)
-        if scene.cache_path(capture.background, width, height, capture.fps, mode).exists():
+        if scene.ready_loop(capture.background, width, height, capture.fps, mode, self.loop_quality()):
             return
         job = self.background_job
         if job and job.isRunning():
             if (job.capture.background, job.capture.size, job.capture.fps, job.capture.fit) == (capture.background, capture.size, capture.fps, capture.fit):
                 return
             job.cancelled = True
-        job = BackgroundJob(capture, self)
+        job = BackgroundJob(capture, self.loop_quality(), self)
         job.progress.connect(self.status.setText)
         job.done.connect(self.background_ready)
         job.failed.connect(lambda _, message: self.status.setText(message))
@@ -759,6 +787,29 @@ class Window(QMainWindow):
         if hasattr(self, 'pixmap'):
             self.paint_preview()
 
+    def restore_microphone(self):
+        if not sound.available():
+            return
+        self.router.stop()  # Remove anything a crashed run left behind.
+        if self.preferences.data.get('sound_mic'):
+            try:
+                self.router.start(self.preferences.data.get('sound_voice', True), self.preferences.data.get('sound_hear', True))
+            except (OSError, RuntimeError):
+                pass
+
+    def save_sounds(self):
+        self.preferences.data['sounds'] = [item.to_dict() for item in self.sounds]
+        self.preferences.save()
+
+    def open_soundboard(self):
+        # One window for the whole session: downloads and playing sounds survive closing it.
+        if not self.soundboard_window:
+            self.soundboard_window = soundboard.Soundboard(self)
+        self.soundboard_window.update_mic()
+        self.soundboard_window.show()
+        self.soundboard_window.raise_()
+        self.soundboard_window.activateWindow()
+
     def show_diagnostics(self):
         text = diagnostics.report(self)
         QApplication.clipboard().setText(text)
@@ -842,6 +893,9 @@ class Window(QMainWindow):
         self.android.generation += 1
         self.android.commands.cancel()
         self.virtual.commands.cancel()
+        self.player.stop_all()
+        if self.router.active:
+            self.router.stop()
         self.engine.close()
         self.usb_stream.close()
         event.accept()
@@ -931,6 +985,8 @@ def main():
         print('Δεν ξεκίνησε ο έλεγχος δεύτερης εκκίνησης.', file=sys.stderr)
         return 1
     window = Window(arguments.mode, arguments.autostart, arguments.snapshot)
+    # Only the real app touches the audio system (tests and --self-test build windows too).
+    QTimer.singleShot(0, window.restore_microphone)
 
     def activate():
         connection = server.nextPendingConnection()

@@ -4,7 +4,7 @@ import re
 import subprocess
 from PySide6.QtCore import QSize, QThread, Qt, Signal
 from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap, QColor
-from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QListWidget,
+from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QListWidget,
     QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout)
 from . import scene, youtube
 
@@ -145,6 +145,16 @@ class LibraryDialog(QDialog):
         self.remove_button.clicked.connect(self.remove_selected)
         actions.addWidget(self.remove_button)
         layout.addLayout(actions)
+        quality_row = QHBoxLayout()
+        quality_row.addWidget(QLabel('Ποιότητα loops'))
+        self.quality = QComboBox()
+        for label, value in (('Υψηλή · μεγάλα αρχεία', 'high'), ('Κανονική · ~2× μικρότερα', 'normal'), ('Μικρή · ~4× μικρότερα', 'small')):
+            self.quality.addItem(label, value)
+        self.quality.setCurrentIndex(max(0, self.quality.findData(window.loop_quality())))
+        self.quality.setToolTip('Ισχύει για τα loops που θα φτιαχτούν από εδώ και πέρα. Τα υπάρχοντα μένουν όπως είναι, εκτός αν το ζητήσεις.')
+        self.quality.activated.connect(self.quality_chosen)
+        quality_row.addWidget(self.quality, 1)
+        layout.addLayout(quality_row)
         footer = QHBoxLayout()
         self.space = QLabel('')
         self.space.setObjectName('muted')
@@ -273,6 +283,19 @@ class LibraryDialog(QDialog):
             item.unlink(missing_ok=True)
         self.images.pop(path, None)
         self.refresh(select='')
+
+    def quality_chosen(self):
+        quality = self.quality.currentData()
+        if quality == self.window.loop_quality():
+            return
+        redo = False
+        if self.window.capture.background and self.window.capture.motion:
+            redo = QMessageBox.question(self, 'Ποιότητα loops',
+                'Να ξαναφτιαχτεί και το τρέχον φόντο σε αυτή την ποιότητα;\n\n'
+                'Γίνεται στο παρασκήνιο με χαμηλή προτεραιότητα (λίγα λεπτά). Αν όχι, θα ισχύσει για τα επόμενα.') == QMessageBox.StandardButton.Yes
+        self.window.set_loop_quality(quality, redo)
+        self.progress.setText('Η νέα ποιότητα ισχύει για τα επόμενα loops.' + (' Το τρέχον ξαναφτιάχνεται…' if redo else ''))
+        self.refresh()
 
     def clean_cache(self):
         active = self.window.capture.background

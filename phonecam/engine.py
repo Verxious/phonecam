@@ -166,10 +166,10 @@ class CaptureEngine(QObject):
             width, height = map(int, capture.size.split('x'))
             try:
                 mode = scene.resolve_fit(capture.background, capture.fit, width, height)
-                loop = scene.cache_path(capture.background, width, height, capture.fps, mode)
+                loop = scene.ready_loop(capture.background, width, height, capture.fps, mode)
             except OSError:
                 return ''
-            if loop.exists():
+            if loop:
                 return str(loop)
         return capture.background
 

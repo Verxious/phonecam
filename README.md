@@ -62,6 +62,7 @@ Rotation, horizontal Mirror, **Φυσικό**, **Ζεστό**, **Ασπρόμα�
 - **Video + Seamless loop**: the video is converted once to the camera size and rate, and its last 1.5 s dissolve into its beginning so the repeat is invisible.
 - **YouTube link**: paste a link (YouTube or any site yt-dlp supports); the video is downloaded once (up to 1080p, no audio) and looped like a file. yt-dlp is fetched automatically if it is not installed.
 - **Mirror φόντου** flips only the background; **Mirror** flips only you.
+- **Ποιότητα loops** (in the background manager): *Υψηλή*, *Κανονική* (about half the size) or *Μικρή* (about a quarter). Changing it never re-renders existing loops unless you ask.
 - **Κάδρο** decides how a background with another shape fits: *Αυτόματο* fills the screen when shapes are close and shows portrait videos whole; *Γέμισμα οθόνης* crops; *μαύρες* or *θολές μπάρες* show everything.
 - **Διαχείριση · προσθήκη φόντων…** lists every background with a thumbnail. Removing one deletes what PhoneCam made for it (rendered loops, downloaded videos) but never your own files; **Καθαρισμός cache** frees all loops except the active one.
 
@@ -69,12 +70,20 @@ Loops are cached in `~/.config/phonecam/backgrounds` per resolution and FPS. Ren
 
 If Discord displays an error about setting the video background, select **Video Background → None**, then reopen video.
 
+## Soundboard
+
+**🔊 Soundboard** plays sounds into calls. Add a sound from a link (YouTube or any site yt-dlp supports; only the audio is downloaded) or from a file, then choose where it starts and how many seconds it plays, its volume, and whether it repeats behind your voice until stopped. **▶ Δοκιμή** previews on your own speakers.
+
+**Μικρόφωνο για Discord** creates a virtual microphone, «PhoneCam Mic», that carries your voice (optional) plus the sounds; select it as the input device in Discord. **Ακούω κι εγώ τους ήχους** also plays them on your speakers. Uses PulseAudio or PipeWire through `pactl`/`paplay` (pulseaudio-utils, or libpulse on Arch). The microphone is removed when PhoneCam closes and comes back the next time it starts. Turn off Discord's noise suppression for music, otherwise it filters the sounds out.
+
+Removing a sound deletes its downloaded audio; your own files are never touched.
+
 ## Development
 
 ```sh
 python -m unittest discover -s tests -v
 ```
 
-Modules: `app` interface, `library` background manager, `youtube` link downloads, `updater` updates, `driver` v4l2loopback setup, `scene` background analysis and loops, `compositor` person matting, `weights` model files, `android` discovery and connection, `network` USB forwarding, `engine` video pipeline, `live` runtime filter control, `virtual` webcam device, `models` validation and metadata, `config` atomic preferences. Configuration is stored in `~/.config/phonecam`; legacy POCO settings are imported on first run. Stream URLs may contain passwords, so the preferences file is private (mode 0600).
+Modules: `app` interface, `sound` virtual microphone and playback, `soundboard` sound library, `library` background manager, `youtube` link downloads, `updater` updates, `driver` v4l2loopback setup, `scene` background analysis and loops, `compositor` person matting, `weights` model files, `android` discovery and connection, `network` USB forwarding, `engine` video pipeline, `live` runtime filter control, `virtual` webcam device, `models` validation and metadata, `config` atomic preferences. Configuration is stored in `~/.config/phonecam`; legacy POCO settings are imported on first run. Stream URLs may contain passwords, so the preferences file is private (mode 0600).
 
 Upstream camera documentation: [scrcpy camera capture](https://github.com/Genymobile/scrcpy/blob/master/doc/camera.md).

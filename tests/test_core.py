@@ -249,6 +249,49 @@ class BackgroundTests(unittest.TestCase):
         self.assertIn('Start server', diagnose(f'http://127.0.0.1:{closed}/video'))
         self.assertIn('ίδιο Wi-Fi', diagnose('http://192.0.2.1:8080/video', timeout=1))  # TEST-NET: never answers
 
+    def test_loop_quality_never_forces_a_rerender(self):
+        with tempfile.TemporaryDirectory() as folder:
+            image = Path(folder) / 'sea.png'
+            cv2.imwrite(str(image), synthetic_scene())
+            high = scene.cache_path(image, 320, 180, 15)
+            small = scene.cache_path(image, 320, 180, 15, quality='small')
+            self.assertNotEqual(high, small)
+            self.assertIsNone(scene.ready_loop(image, 320, 180, 15, quality='small'))
+            high.parent.mkdir(parents=True, exist_ok=True)
+            high.write_bytes(b'loop')
+            try:
+                # Asking for another quality reuses the loop that exists.
+                self.assertEqual(scene.ready_loop(image, 320, 180, 15, quality='small'), high)
+                small.write_bytes(b'loop')
+                self.assertEqual(scene.ready_loop(image, 320, 180, 15, quality='small'), small)
+                self.assertIn(small, scene.derived_files(image))
+            finally:
+                high.unlink(missing_ok=True)
+                small.unlink(missing_ok=True)
+
+    def test_sound_plays_only_the_chosen_seconds(self):
+        import time
+        from PySide6.QtCore import QCoreApplication, QTimer
+        from phonecam import sound
+        if not sound.available():
+            self.skipTest('no PulseAudio/PipeWire here')
+        app = QCoreApplication.instance() or QCoreApplication([])
+        with tempfile.TemporaryDirectory() as folder:
+            tone = Path(folder) / 'tone.ogg'
+            subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=10',
+                str(tone)], check=True)
+            item = sound.Sound('τόνος', str(tone), start=4, length=0.6, volume=1)
+            self.assertEqual(sound.Sound.from_dict({**item.to_dict(), 'unknown': 1}), item)
+            player = sound.Player()
+            ended = []
+            player.stopped.connect(lambda _: (ended.append(time.monotonic()), app.quit()))
+            started = time.monotonic()
+            player.play(item, to_mic=False)
+            QTimer.singleShot(5000, app.quit)
+            app.exec()
+            self.assertTrue(ended)
+            self.assertLess(ended[0] - started, 3)  # 0.6 s of a 10 s file, not the whole file
+
     def test_matte_and_preview_shapes(self):
         frame = np.full((360, 640, 3), 90, np.uint8)
         alpha = Matte(640, 360)(frame)

@@ -358,7 +358,11 @@ def source_tag(image_path):
     return hashlib.sha256(str(Path(image_path).resolve()).encode()).hexdigest()[:10]
 
 
-def cache_path(image_path, width, height, fps, fit='cover'):
+# x264 CRF per quality: lower is sharper and bigger. 'high' keeps the original names.
+QUALITY = {'high': (16, 18), 'normal': (21, 23), 'small': (27, 29)}  # (scene loops, videos)
+
+
+def cache_path(image_path, width, height, fps, fit='cover', quality='high'):
     path = Path(image_path)
     stat = path.stat()
     key = f'{VERSION}:{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:{width}x{height}@{fps}'
@@ -371,7 +375,22 @@ def cache_path(image_path, width, height, fps, fit='cover'):
     legacy = CACHE / f'{digest}.mkv'
     if legacy.exists() and not target.exists():
         legacy.replace(target)  # Loops rendered before names carried their source.
-    return target
+    return target if quality == 'high' else target.with_name(f'{target.stem}-{quality}.mkv')
+
+
+def ready_loop(image_path, width, height, fps, fit='cover', quality='high'):
+    """The loop in the wanted quality, else one already made in another quality.
+
+    Changing quality never re-renders on its own (that costs minutes of CPU).
+    """
+    wanted = cache_path(image_path, width, height, fps, fit, quality)
+    if wanted.exists():
+        return wanted
+    for other in QUALITY:
+        candidate = cache_path(image_path, width, height, fps, fit, other)
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def derived_files(image_path):
@@ -401,10 +420,10 @@ def _render_frame(index):
     return _worker_scene.frame(index).tobytes()
 
 
-def render(image_path, width, height, fps, model=None, progress=None, cancelled=None, fit='cover'):
+def render(image_path, width, height, fps, model=None, progress=None, cancelled=None, fit='cover', quality='high'):
     """Render the loop once and return its cached path."""
     mode = resolve_fit(image_path, fit, width, height)
-    target = cache_path(image_path, width, height, fps, mode)
+    target = cache_path(image_path, width, height, fps, mode, quality)
     if target.exists():
         return target
     CACHE.mkdir(parents=True, exist_ok=True)
@@ -419,7 +438,7 @@ def render(image_path, width, height, fps, model=None, progress=None, cancelled=
         'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
         '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{width}x{height}', '-r', str(fps), '-i', 'pipe:0',
         '-filter_complex', fit_graph(mode, outer_width, outer_height, '[0:v]', '[out]'), '-map', '[out]',
-        '-c:v', 'libx264', '-preset', 'medium', '-crf', '16', '-pix_fmt', 'yuv420p', '-g', str(fps * 2),
+        '-c:v', 'libx264', '-preset', 'medium', '-crf', str(QUALITY[quality][0]), '-pix_fmt', 'yuv420p', '-g', str(fps * 2),
         str(temporary),
     ], stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     # Few, low-priority workers: this runs while games and calls are open.
@@ -454,13 +473,13 @@ def duration(path):
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
-def seamless(video_path, width, height, fps, progress=None, cancelled=None, fit='cover'):
+def seamless(video_path, width, height, fps, progress=None, cancelled=None, fit='cover', quality='high'):
     """Make a video loop invisibly: its last moments dissolve into its beginning.
 
     Also converts it to the camera size and rate once, so playback costs little.
     """
     mode = resolve_fit(video_path, fit, width, height)
-    target = cache_path(video_path, width, height, fps, mode)
+    target = cache_path(video_path, width, height, fps, mode, quality)
     if target.exists():
         return target
     CACHE.mkdir(parents=True, exist_ok=True)
@@ -481,7 +500,7 @@ def seamless(video_path, width, height, fps, progress=None, cancelled=None, fit=
     process = subprocess.Popen([
         'nice', '-n', '10', 'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:1', '-nostats',
         '-i', str(video_path), '-filter_complex', graph, '-map', '[out]', '-an',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-g', str(fps * 2), '-threads', '3', str(temporary),
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', str(QUALITY[quality][1]), '-g', str(fps * 2), '-threads', '3', str(temporary),
     ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         for line in process.stdout:
