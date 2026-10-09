@@ -156,6 +156,34 @@ class BackgroundTests(unittest.TestCase):
             self.assertEqual(window.preferences.data['backgrounds'], [])
             self.assertEqual(window.capture.background, '')
 
+    def test_portrait_backgrounds_are_shown_whole(self):
+        with tempfile.TemporaryDirectory() as folder:
+            portrait = Path(folder) / 'tall.png'
+            image = np.full((800, 400, 3), 200, np.uint8)
+            cv2.imwrite(str(portrait), image)
+            self.assertEqual(scene.resolve_fit(portrait, 'auto', 1920, 1080), 'bars')
+            wide = Path(folder) / 'wide.png'
+            cv2.imwrite(str(wide), np.full((540, 1000, 3), 200, np.uint8))
+            self.assertEqual(scene.resolve_fit(wide, 'auto', 1920, 1080), 'cover')
+            framed = scene.frame_still(image, 320, 180, 'bars')
+            self.assertEqual(framed.shape, (180, 320, 3))
+            self.assertEqual(int(framed[:, :100].max()), 0)        # black side bars
+            self.assertGreater(int(framed[:, 150:170].min()), 150)  # whole picture in the middle
+            blurred = scene.frame_still(image, 320, 180, 'blur')
+            self.assertGreater(int(blurred[:, :40].mean()), 50)     # bars filled, not black
+            video = Path(folder) / 'tall.mp4'
+            subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=white:size=180x320:rate=10',
+                '-t', '1', '-pix_fmt', 'yuv420p', str(video)], check=True)
+            self.assertEqual(scene.source_size(video), (180, 320))
+            loop = scene.seamless(video, 320, 180, 10, fit='bars')
+            try:
+                ok, frame = cv2.VideoCapture(str(loop)).read()
+                self.assertTrue(ok)
+                self.assertLess(int(frame[:, :60].mean()), 20)
+                self.assertGreater(int(frame[:, 140:180].mean()), 200)
+            finally:
+                loop.unlink()
+
     def test_matte_and_preview_shapes(self):
         frame = np.full((360, 640, 3), 90, np.uint8)
         alpha = Matte(640, 360)(frame)

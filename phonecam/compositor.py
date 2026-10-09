@@ -13,7 +13,10 @@ import threading
 import time
 import cv2
 import numpy as np
-from .scene import cover, guided, is_video
+import json
+from pathlib import Path
+from .scene import fit_graph, frame_still, guided, is_video, resolve_fit
+from .scene import CACHE
 from .weights import PERSON
 
 MATTE_SIZE = (256, 144)
@@ -63,22 +66,24 @@ class Matte:
 class Backdrop:
     """Animated loop through FFmpeg, or a still image."""
 
-    def __init__(self, path, width, height):
+    def __init__(self, path, width, height, fit='cover'):
         self.width, self.height = width, height
         self.process = None
         self.still = None
         self.size = width * height * 3
+        # Rendered loops are already framed; only original files need fitting here.
+        mode = 'cover' if Path(path).parent == CACHE else resolve_fit(path, fit, width, height)
         if is_video(path):
             self.process = spawn([
                 'ffmpeg', '-hide_banner', '-loglevel', 'error', '-stream_loop', '-1', '-i', path,
-                '-vf', f'scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}',
+                '-filter_complex', fit_graph(mode, width, height, '[0:v]', '[out]'), '-map', '[out]',
                 '-f', 'rawvideo', '-pix_fmt', 'bgr24', 'pipe:1',
             ], stdout=subprocess.PIPE, bufsize=0)
         else:
             image = cv2.imread(path, cv2.IMREAD_COLOR)
             if image is None:
                 raise ValueError('Δεν διαβάστηκε η εικόνα φόντου.')
-            self.still = cover(image, width, height)
+            self.still = frame_still(image, width, height, mode)
         self.last = self.still
 
     def next(self):
@@ -126,6 +131,7 @@ def main():
     parser.add_argument('--background', required=True)
     parser.add_argument('--preview', default='960x540')
     parser.add_argument('--mirror', type=int, default=0)
+    parser.add_argument('--fit', default='auto')
     parser.add_argument('--format', default='v4l2', help=argparse.SUPPRESS)
     arguments = parser.parse_args()
     width, height = map(int, arguments.size.split('x'))
@@ -144,11 +150,11 @@ def main():
         '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{width}x{height}', '-r', str(arguments.fps), '-i', 'pipe:0',
         '-an', '-pix_fmt', 'yuv420p', '-c:v', 'rawvideo', '-f', arguments.format, arguments.device,
     ], stdin=subprocess.PIPE, bufsize=0)
-    backdrop = Backdrop(arguments.background, width, height)
-    current = arguments.background
+    backdrop = Backdrop(arguments.background, width, height, arguments.fit)
+    current = (arguments.background, arguments.fit)
     matte = Matte(width, height)
     # The scene has its own Mirror, independent of the person's; it changes live over stdin.
-    state = {'mirror': bool(arguments.mirror), 'background': arguments.background}
+    state = {'mirror': bool(arguments.mirror), 'background': current}
 
     def listen():
         for line in sys.stdin:
@@ -156,7 +162,8 @@ def main():
             if name == 'mirror':
                 state['mirror'] = value == '1'
             elif name == 'background' and value:
-                state['background'] = value
+                path, fit = json.loads(value)
+                state['background'] = (path, fit)
 
     threading.Thread(target=listen, daemon=True).start()
     output = sys.stdout.buffer
@@ -173,7 +180,7 @@ def main():
             if state['background'] != current:
                 current = state['background']
                 try:
-                    replacement = Backdrop(current, width, height)
+                    replacement = Backdrop(current[0], width, height, current[1])
                     backdrop.close()
                     backdrop = replacement
                 except (OSError, ValueError) as exc:

@@ -60,6 +60,7 @@ Rotation, horizontal Mirror, **Φυσικό**, **Ζεστό**, **Ασπρόμα�
 - **Video + Seamless loop**: the video is converted once to the camera size and rate, and its last 1.5 s dissolve into its beginning so the repeat is invisible.
 - **YouTube link**: paste a link (YouTube or any site yt-dlp supports); the video is downloaded once (up to 1080p, no audio) and looped like a file. yt-dlp is fetched automatically if it is not installed.
 - **Mirror φόντου** flips only the background; **Mirror** flips only you.
+- **Κάδρο** decides how a background with another shape fits: *Αυτόματο* fills the screen when shapes are close and shows portrait videos whole; *Γέμισμα οθόνης* crops; *μαύρες* or *θολές μπάρες* show everything.
 - **Διαχείριση · προσθήκη φόντων…** lists every background with a thumbnail. Removing one deletes what PhoneCam made for it (rendered loops, downloaded videos) but never your own files; **Καθαρισμός cache** frees all loops except the active one.
 
 Loops are cached in `~/.config/phonecam/backgrounds` per resolution and FPS. Rendering uses at most three low-priority processes.

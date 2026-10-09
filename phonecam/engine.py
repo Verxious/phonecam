@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -39,6 +40,7 @@ class CaptureEngine(QObject):
         self.controls = None
         self.control_endpoint = ''
         self.backdrop = ''
+        self.fit = 'auto'
         self.buffer = bytearray()
         self.logs = ''
         self.pipe = STATE / 'preview.mkv.pipe'
@@ -54,7 +56,7 @@ class CaptureEngine(QObject):
         self.generation += 1
         if self.capture and self.received and self.controls and not self.stopping:
             old = replace(self.capture, rotation=capture.rotation, mirror=capture.mirror, look=capture.look, exposure=capture.exposure,
-                background=capture.background, motion=capture.motion, background_mirror=capture.background_mirror)
+                background=capture.background, motion=capture.motion, background_mirror=capture.background_mirror, fit=capture.fit)
             backdrop = self.backdrop_path(capture)
             # Switching between backgrounds happens inside the running compositor; only
             # turning the background on or off needs a different pipeline.
@@ -62,9 +64,9 @@ class CaptureEngine(QObject):
                 self.capture = replace(capture)
                 self.controls.submit(self.generation, replace(capture), commands(capture))
                 if self.backdrop and self.preview:
-                    if backdrop != self.backdrop:
-                        self.preview.write(f'background {backdrop}\n'.encode())
-                        self.backdrop = backdrop
+                    if (backdrop, capture.fit) != (self.backdrop, self.fit):
+                        self.preview.write(('background ' + json.dumps([backdrop, capture.fit]) + '\n').encode())
+                        self.backdrop, self.fit = backdrop, capture.fit
                     self.preview.write(f'mirror {int(capture.background_mirror)}\n'.encode())
                 return
         if self.good and (capture.source, capture.serial, capture.url) != (self.good.source, self.good.serial, self.good.url):
@@ -160,7 +162,8 @@ class CaptureEngine(QObject):
         if capture.motion:
             width, height = map(int, capture.size.split('x'))
             try:
-                loop = scene.cache_path(capture.background, width, height, capture.fps)
+                mode = scene.resolve_fit(capture.background, capture.fit, width, height)
+                loop = scene.cache_path(capture.background, width, height, capture.fps, mode)
             except OSError:
                 return ''
             if loop.exists():
@@ -182,6 +185,7 @@ class CaptureEngine(QObject):
         self.preview.finished.connect(self.preview_finished)
         filters = self.image_filters(self.capture) + f",zmq=bind_address='tcp\\://127.0.0.1\\:{port}'"
         self.backdrop = self.backdrop_path(self.capture)
+        self.fit = self.capture.fit
         if self.backdrop:
             # Person matting needs every frame in Python; same outputs as below.
             self.preview.setWorkingDirectory(str(Path(__file__).resolve().parents[1]))
@@ -189,7 +193,7 @@ class CaptureEngine(QObject):
                 '-m', 'phonecam.compositor', '--input', str(self.pipe), '--filters', filters,
                 '--device', self.device, '--size', self.capture.size, '--fps', str(self.capture.fps),
                 '--background', self.backdrop, '--preview', f'{FRAME_WIDTH}x{FRAME_HEIGHT}',
-                '--mirror', str(int(self.capture.background_mirror)),
+                '--mirror', str(int(self.capture.background_mirror)), '--fit', self.capture.fit,
             ])
             return
         graph = f"[0:v]{filters},split=2[webcam][ui];[ui]scale={FRAME_WIDTH}:{FRAME_HEIGHT}:force_original_aspect_ratio=decrease,pad={FRAME_WIDTH}:{FRAME_HEIGHT}:(ow-iw)/2:(oh-ih)/2[screen]"

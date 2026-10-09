@@ -17,10 +17,16 @@ def downloaded(path):
     return Path(path).parent == youtube.FOLDER
 
 
+TITLES = {}  # path -> real title of downloaded videos; the window keeps it in preferences
+
+
 def title(path):
+    if TITLES.get(path):
+        return TITLES[path]
     name = Path(path).stem
     if downloaded(path):
-        name = re.sub(r' ?\[[\w-]{6,}\]$', '', name).replace('_', ' ')
+        name = re.sub(r' ?\[[\w-]{6,}\]$', '', name).replace('_', ' ').strip()
+        return name or f'Βίντεο {youtube.video_id(path)}'
     return name
 
 
@@ -47,6 +53,7 @@ def file_size(path):
 class Thumbnails(QThread):
     """Video thumbnails come from FFmpeg; done off the UI thread and cached."""
     ready = Signal(str, QImage)
+    titled = Signal(str, str)
 
     def __init__(self, paths, parent=None):
         super().__init__(parent)
@@ -68,6 +75,15 @@ class Thumbnails(QThread):
                 image = QImage(path)
             if not image.isNull():
                 self.ready.emit(path, image.scaled(THUMB * 2, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation))
+            identifier = youtube.video_id(path)
+            if downloaded(path) and not TITLES.get(path) and len(identifier) == 11:
+                # Older downloads lost non-Latin titles in their file names; ask YouTube once.
+                try:
+                    name = youtube.lookup_title(f'https://www.youtube.com/watch?v={identifier}')
+                except (OSError, subprocess.SubprocessError):
+                    name = ''
+                if name:
+                    self.titled.emit(path, name)
 
 
 def framed(image, badge):
@@ -185,6 +201,7 @@ class LibraryDialog(QDialog):
         if missing and not (self.thumbs and self.thumbs.isRunning()):
             self.thumbs = Thumbnails(missing, self)
             self.thumbs.ready.connect(self.thumbnail_ready)
+            self.thumbs.titled.connect(self.title_found)
             self.thumbs.start()
 
     def thumbnail_ready(self, path, image):
@@ -194,6 +211,10 @@ class LibraryDialog(QDialog):
             if item.data(Qt.ItemDataRole.UserRole) == path:
                 badge = '▶ YT' if downloaded(path) else ('▶' if scene.is_video(path) else '')
                 item.setIcon(framed(image, badge))
+
+    def title_found(self, path, name):
+        self.window.remember_title(path, name)
+        self.refresh()
 
     def selected(self):
         item = self.list.currentItem()

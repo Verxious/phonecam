@@ -5,6 +5,7 @@ are advected with two-phase flow maps (so the loop has no visible jump), driftin
 mist sits over the horizon and warm light sources flicker. Everything is periodic
 in the loop length, and the rendered loop is cached as a video next to the settings.
 """
+import functools
 import hashlib
 from multiprocessing import get_context
 import os
@@ -31,6 +32,84 @@ def cover(image, width, height):
     y = (resized.shape[0] - height) // 2
     x = (resized.shape[1] - width) // 2
     return np.ascontiguousarray(resized[y:y + height, x:x + width])
+
+
+FITS = ('auto', 'cover', 'bars', 'blur')
+
+
+def source_size(path):
+    """Displayed (width, height) of an image or video, honouring phone rotation tags."""
+    stat = Path(path).stat()
+    return _source_size(str(path), stat.st_mtime_ns, stat.st_size)
+
+
+@functools.lru_cache(maxsize=64)
+def _source_size(path, *_):
+    # Cached: the engine asks on every filter change, and probing runs FFmpeg.
+    if not is_video(path):
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError('Δεν διαβάστηκε η εικόνα φόντου.')
+        return image.shape[1], image.shape[0]
+    result = subprocess.run(['ffmpeg', '-hide_banner', '-i', str(path)], capture_output=True, text=True, timeout=20)
+    match = re.search(r'Video:.*?(\d{2,5})x(\d{2,5})', result.stderr)
+    if not match:
+        raise ValueError('Δεν διαβάστηκε το βίντεο φόντου.')
+    width, height = int(match[1]), int(match[2])
+    rotation = re.search(r'rotation of (-?[\d.]+)', result.stderr)
+    if rotation and round(abs(float(rotation[1]))) % 180 == 90:
+        width, height = height, width
+    return width, height
+
+
+def resolve_fit(path, fit, width, height):
+    """'auto' fills the screen when shapes are close and shows everything otherwise."""
+    if fit in ('cover', 'bars', 'blur'):
+        return fit
+    try:
+        source_width, source_height = source_size(path)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 'cover'
+    ratio = (source_width / source_height) / (width / height)
+    return 'cover' if 0.8 <= ratio <= 1.25 else 'bars'
+
+
+def inner_size(path, width, height):
+    """Size of the whole picture when it is fitted inside the frame (even numbers)."""
+    source_width, source_height = source_size(path)
+    scale = min(width / source_width, height / source_height)
+    return max(2, int(source_width * scale) // 2 * 2), max(2, int(source_height * scale) // 2 * 2)
+
+
+def fit_graph(mode, width, height, source, output):
+    """FFmpeg filter graph that frames ``source`` into width x height."""
+    fill = f'scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}'
+    whole = f'scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2'
+    if mode == 'bars':
+        return f'{source}{whole},pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1{output}'
+    if mode == 'blur':
+        return (f'{source}split[fitback][fitfront];[fitback]scale={width // 4}:{height // 4}:force_original_aspect_ratio=increase,'
+                f'crop={width // 4}:{height // 4},boxblur=12:3,eq=brightness=-0.12:saturation=0.85,scale={width}:{height}[fitblur];'
+                f'[fitfront]{whole}[fitsharp];[fitblur][fitsharp]overlay=(W-w)/2:(H-h)/2,setsar=1{output}')
+    return f'{source}{fill},setsar=1{output}'
+
+
+def frame_still(image, width, height, mode):
+    """Python version of fit_graph for still images."""
+    if mode == 'cover':
+        return cover(image, width, height)
+    h, w = image.shape[:2]
+    scale = min(width / w, height / h)
+    size = (max(2, int(w * scale) // 2 * 2), max(2, int(h * scale) // 2 * 2))
+    front = cv2.resize(image, size, interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
+    if mode == 'blur':
+        canvas = cv2.GaussianBlur(cover(image, width // 4, height // 4), (0, 0), 6)
+        canvas = cv2.resize(cv2.convertScaleAbs(canvas, alpha=0.85), (width, height), interpolation=cv2.INTER_LINEAR)
+    else:
+        canvas = np.zeros((height, width, 3), np.uint8)
+    y, x = (height - size[1]) // 2, (width - size[0]) // 2
+    canvas[y:y + size[1], x:x + size[0]] = front
+    return canvas
 
 
 def tile_noise(height, width, scale, seed):
@@ -279,10 +358,12 @@ def source_tag(image_path):
     return hashlib.sha256(str(Path(image_path).resolve()).encode()).hexdigest()[:10]
 
 
-def cache_path(image_path, width, height, fps):
+def cache_path(image_path, width, height, fps, fit='cover'):
     path = Path(image_path)
     stat = path.stat()
     key = f'{VERSION}:{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:{width}x{height}@{fps}'
+    if fit != 'cover':
+        key += f':{fit}'  # Fill-the-screen loops keep their original names.
     if is_video(path):
         key = f'video{VIDEO_VERSION}:' + key
     digest = hashlib.sha256(key.encode()).hexdigest()[:20]
@@ -320,18 +401,24 @@ def _render_frame(index):
     return _worker_scene.frame(index).tobytes()
 
 
-def render(image_path, width, height, fps, model=None, progress=None, cancelled=None):
+def render(image_path, width, height, fps, model=None, progress=None, cancelled=None, fit='cover'):
     """Render the loop once and return its cached path."""
-    target = cache_path(image_path, width, height, fps)
+    mode = resolve_fit(image_path, fit, width, height)
+    target = cache_path(image_path, width, height, fps, mode)
     if target.exists():
         return target
     CACHE.mkdir(parents=True, exist_ok=True)
+    # Whole-picture modes animate the picture at its own shape and frame it on encode.
+    outer_width, outer_height = width, height
+    if mode != 'cover':
+        width, height = inner_size(image_path, outer_width, outer_height)
     info = analyse(cover(load(image_path), width, height), model)
     frames = max(1, round(fps * LOOP_SECONDS))
     temporary = target.with_suffix('.part.mkv')
     encoder = subprocess.Popen([
         'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
         '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{width}x{height}', '-r', str(fps), '-i', 'pipe:0',
+        '-filter_complex', fit_graph(mode, outer_width, outer_height, '[0:v]', '[out]'), '-map', '[out]',
         '-c:v', 'libx264', '-preset', 'medium', '-crf', '16', '-pix_fmt', 'yuv420p', '-g', str(fps * 2),
         str(temporary),
     ], stdin=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -367,27 +454,28 @@ def duration(path):
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
-def seamless(video_path, width, height, fps, progress=None, cancelled=None):
+def seamless(video_path, width, height, fps, progress=None, cancelled=None, fit='cover'):
     """Make a video loop invisibly: its last moments dissolve into its beginning.
 
     Also converts it to the camera size and rate once, so playback costs little.
     """
-    target = cache_path(video_path, width, height, fps)
+    mode = resolve_fit(video_path, fit, width, height)
+    target = cache_path(video_path, width, height, fps, mode)
     if target.exists():
         return target
     CACHE.mkdir(parents=True, exist_ok=True)
     length = duration(video_path)
     fade = min(1.5, length / 4)
-    shape = f'fps={fps},scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1,format=yuv420p'
+    shape = f'[0:v]fps={fps}[rate];' + fit_graph(mode, width, height, '[rate]', '[framed]') + ';[framed]format=yuv420p'
     if length >= 2:
         # Output frame t shows v(t + fade); its final `fade` seconds blend toward v(fade),
         # which is exactly where the next pass starts.
-        graph = (f'[0:v]{shape},split[a][b];[a]trim=start={fade},setpts=PTS-STARTPTS[body];'
+        graph = (f'{shape},split[a][b];[a]trim=start={fade},setpts=PTS-STARTPTS[body];'
                  f'[b]trim=end={fade},setpts=PTS-STARTPTS[head];'
                  f'[body][head]xfade=transition=fade:duration={fade}:offset={length - 2 * fade:.3f}[out]')
         total = length - fade
     else:
-        graph = f'[0:v]{shape}[out]'
+        graph = f'{shape}[out]'
         total = length
     temporary = target.with_suffix('.part.mkv')
     process = subprocess.Popen([

@@ -46,6 +46,7 @@ class Capture:
     background: str = ''
     motion: bool = True
     background_mirror: bool = False
+    fit: str = 'auto'
 
     def validated(self):
         if self.source not in ('android', 'network'):
@@ -63,6 +64,8 @@ class Capture:
             raise ValueError('Μη έγκυρο φίλτρο ή φωτεινότητα.')
         if not isinstance(self.background, str) or not isinstance(self.motion, bool) or not isinstance(self.background_mirror, bool):
             raise ValueError('Μη έγκυρο φόντο.')
+        if self.fit not in ('auto', 'cover', 'bars', 'blur'):
+            raise ValueError('Μη έγκυρο κάδρο φόντου.')
         if self.source == 'network':
             parsed = urlsplit(self.url)
             if parsed.scheme not in ('rtsp', 'rtsps', 'http', 'https') or not parsed.hostname:

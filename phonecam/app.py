@@ -20,6 +20,7 @@ from .virtual import VirtualCamera
 
 ROOT = Path(__file__).resolve().parent
 LOOKS = [('Φυσικό', 'natural'), ('Ζεστό', 'warm'), ('Ασπρόμαυρο', 'mono'), ('Έντονα χρώματα', 'vivid')]
+FITS = [('Αυτόματο · κάθετα ολόκληρα', 'auto'), ('Γέμισμα οθόνης', 'cover'), ('Ολόκληρο · μαύρες μπάρες', 'bars'), ('Ολόκληρο · θολές μπάρες', 'blur')]
 COMMON_SIZES = [('720p', '1280x720'), ('1080p', '1920x1080'), ('1440p', '2560x1440'), ('4K', '3840x2160')]
 
 
@@ -42,14 +43,14 @@ class BackgroundJob(QThread):
             if scene.is_video(self.capture.background):
                 scene.seamless(self.capture.background, width, height, self.capture.fps,
                     lambda done, total: self.progress.emit(f'Seamless loop για το βίντεο… {int(done * 100 / total)}%'),
-                    lambda: self.cancelled)
+                    lambda: self.cancelled, self.capture.fit)
                 self.done.emit(self.capture)
                 return
             model = weights.scene_model(downloading, lambda: self.cancelled)
             self.progress.emit('Ανάλυση εικόνας φόντου…')
             scene.render(self.capture.background, width, height, self.capture.fps, model,
                 lambda done, total: self.progress.emit(f'Προετοιμασία κινούμενου φόντου… {done * 100 // total}%'),
-                lambda: self.cancelled)
+                lambda: self.cancelled, self.capture.fit)
             self.done.emit(self.capture)
         except InterruptedError:
             pass
@@ -60,7 +61,7 @@ class BackgroundJob(QThread):
 
 class YouTubeJob(QThread):
     progress = Signal(str)
-    done = Signal(str)
+    done = Signal(str, str)
     failed = Signal(str)
 
     def __init__(self, link, parent=None):
@@ -70,7 +71,7 @@ class YouTubeJob(QThread):
 
     def run(self):
         try:
-            self.done.emit(youtube.download(self.link, self.progress.emit, lambda: self.cancelled))
+            self.done.emit(*youtube.download(self.link, self.progress.emit, lambda: self.cancelled))
         except InterruptedError:
             pass
         except Exception as exc:
@@ -151,6 +152,7 @@ class Window(QMainWindow):
         self.background_job = None
         self.youtube_job = None
         self.library_dialog = None
+        library.TITLES.update(self.preferences.data.get('titles', {}))
         self.setWindowTitle('PhoneCam')
         self.setWindowIcon(QIcon(str(ROOT / 'assets' / 'phonecam.svg')))
         self.resize(1100, 730)
@@ -316,6 +318,16 @@ class Window(QMainWindow):
         self.background_mirror.setChecked(self.capture.background_mirror)
         self.background_mirror.toggled.connect(lambda checked: self.apply(replace(self.capture, background_mirror=checked)))
         panel.addWidget(self.background_mirror)
+        fit_row = QHBoxLayout()
+        fit_row.addWidget(QLabel('Κάδρο'))
+        self.fit = QComboBox()
+        self.fit.setToolTip('Πώς μπαίνει στην οθόνη ένα φόντο με άλλο σχήμα, π.χ. κάθετο βίντεο από κινητό.')
+        for label, value in FITS:
+            self.fit.addItem(label, value)
+        self.fit.setCurrentIndex(max(0, self.fit.findData(self.capture.fit)))
+        self.fit.currentIndexChanged.connect(lambda: self.apply(replace(self.capture, fit=self.fit.currentData())))
+        fit_row.addWidget(self.fit, 1)
+        panel.addLayout(fit_row)
         panel.addStretch()
         self.help = QLabel('Στο Discord / OBS επίλεξε τη virtual camera.\n\nUSB: ενεργοποίησε USB debugging και δέξου την άδεια στο κινητό. Wi-Fi: την πρώτη φορά άφησε το USB συνδεδεμένο.')
         self.help.setWordWrap(True)
@@ -523,6 +535,8 @@ class Window(QMainWindow):
         dialog.deleteLater()
 
     def forget_background(self, path):
+        self.preferences.data.get('titles', {}).pop(path, None)
+        library.TITLES.pop(path, None)
         if path == self.capture.background:
             self.apply(replace(self.capture, background=''))
         self.preferences.data['backgrounds'] = [item for item in self.preferences.data.get('backgrounds', []) if item != path]
@@ -551,7 +565,15 @@ class Window(QMainWindow):
             self.youtube_job = None
         job.deleteLater()
 
-    def youtube_ready(self, path):
+    def remember_title(self, path, name):
+        titles = self.preferences.data.setdefault('titles', {})
+        titles[path] = name
+        library.TITLES.update(titles)
+        self.preferences.save()
+        self.fill_backgrounds()
+
+    def youtube_ready(self, path, name):
+        self.remember_title(path, name)
         self.remember_background(path)
         self.download_progress('Το βίντεο κατέβηκε· ετοιμάζεται το seamless loop…')
         self.use_background(path)
@@ -561,11 +583,12 @@ class Window(QMainWindow):
         if not capture.background or not capture.motion or not Path(capture.background).is_file():
             return
         width, height = map(int, capture.size.split('x'))
-        if scene.cache_path(capture.background, width, height, capture.fps).exists():
+        mode = scene.resolve_fit(capture.background, capture.fit, width, height)
+        if scene.cache_path(capture.background, width, height, capture.fps, mode).exists():
             return
         job = self.background_job
         if job and job.isRunning():
-            if (job.capture.background, job.capture.size, job.capture.fps) == (capture.background, capture.size, capture.fps):
+            if (job.capture.background, job.capture.size, job.capture.fps, job.capture.fit) == (capture.background, capture.size, capture.fps, capture.fit):
                 return
             job.cancelled = True
         job = BackgroundJob(capture, self)
@@ -583,7 +606,7 @@ class Window(QMainWindow):
 
     def background_ready(self, rendered):
         current = self.capture
-        if (rendered.background, rendered.size, rendered.fps) != (current.background, current.size, current.fps) or not current.motion:
+        if (rendered.background, rendered.size, rendered.fps, rendered.fit) != (current.background, current.size, current.fps, current.fit) or not current.motion:
             return
         self.status.setText('Το κινούμενο φόντο είναι έτοιμο.')
         if self.engine.want_capture:
@@ -612,6 +635,9 @@ class Window(QMainWindow):
 
     def sync_controls(self):
         self.motion.setText('Seamless loop · ομαλή επανάληψη' if self.capture.background and scene.is_video(self.capture.background) else 'Κινούμενα εφέ')
+        self.fit.blockSignals(True)
+        self.fit.setCurrentIndex(max(0, self.fit.findData(self.capture.fit)))
+        self.fit.blockSignals(False)
         for box, value in ((self.motion, self.capture.motion), (self.background_mirror, self.capture.background_mirror)):
             box.blockSignals(True)
             box.setChecked(value)

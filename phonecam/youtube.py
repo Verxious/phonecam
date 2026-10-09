@@ -43,16 +43,30 @@ def program(progress=None):
     return str(OWN)
 
 
+def lookup_title(link):
+    """The video's real title (for downloads saved before titles were kept)."""
+    result = subprocess.run([program(), '--skip-download', '--no-playlist', '--print', '%(title)s', link],
+        capture_output=True, text=True, timeout=60)
+    return result.stdout.strip().splitlines()[0] if result.returncode == 0 and result.stdout.strip() else ''
+
+
+def video_id(path):
+    match = re.search(r'\[([\w-]{6,})\]$', Path(path).stem)
+    return match[1] if match else ''
+
+
 def download(link, progress=None, cancelled=None):
-    """Download the video (no audio) and return its local path."""
+    """Download the video (no audio); returns (local path, title)."""
     tool = program(progress)
     FOLDER.mkdir(parents=True, exist_ok=True)
+    # Unicode names are kept (Greek titles must not turn into underscores);
+    # yt-dlp still strips characters that are unsafe in file names.
     process = subprocess.Popen([
-        tool, '--no-playlist', '--newline', '--no-part', '--restrict-filenames', '-f', FORMAT,
-        '--merge-output-format', 'mp4', '-o', str(FOLDER / '%(title).70B [%(id)s].%(ext)s'),
-        '--print', 'after_move:filepath', link,
-    ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    path, errors = '', []
+        tool, '--no-playlist', '--newline', '--no-part', '--encoding', 'utf-8', '-f', FORMAT,
+        '--merge-output-format', 'mp4', '-o', str(FOLDER / '%(title).80B [%(id)s].%(ext)s'),
+        '--print', 'before_dl:TITLE %(title)s', '--print', 'after_move:FILE %(filepath)s', link,
+    ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+    path, name, errors = '', '', []
     try:
         for line in process.stdout:
             if cancelled and cancelled():
@@ -61,13 +75,15 @@ def download(link, progress=None, cancelled=None):
             match = re.search(r'\[download\]\s+([\d.]+)%', line)
             if match and progress:
                 progress(f'Λήψη βίντεο από YouTube… {float(match[1]):.0f}%')
-            elif line.startswith('/') and Path(line).exists():
-                path = line
+            elif line.startswith('TITLE '):
+                name = line[6:].strip()
+            elif line.startswith('FILE ') and Path(line[5:]).exists():
+                path = line[5:]
             elif 'ERROR' in line:
                 errors.append(line.split('ERROR:', 1)[-1].strip())
         if process.wait() != 0 or not path:
             raise RuntimeError(errors[-1][:200] if errors else 'δεν κατέβηκε το βίντεο')
-        return path
+        return path, name or Path(path).stem
     finally:
         if process.poll() is None:
             process.kill()
