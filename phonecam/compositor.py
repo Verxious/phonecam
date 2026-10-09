@@ -144,7 +144,7 @@ def main():
         'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error', '-probesize', '32768', '-analyzeduration', '1',
         '-flags', 'low_delay', '-threads', '1', '-f', 'matroska', '-i', arguments.input,
         '-filter_complex_threads', '2', '-filter_complex', f'[0:v]{arguments.filters}[out]',
-        '-map', '[out]', '-an', '-fps_mode', 'passthrough', '-pix_fmt', 'bgr24', '-f', 'rawvideo', 'pipe:1',
+        '-map', '[out]', '-an', '-fps_mode', 'passthrough', '-pix_fmt', 'yuv420p', '-f', 'rawvideo', 'pipe:1',
     ], stdout=subprocess.PIPE, bufsize=0)
     encoder = spawn([
         'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
@@ -168,16 +168,52 @@ def main():
 
     threading.Thread(target=listen, daemon=True).start()
     output = sys.stdout.buffer
-    size = width * height * 3
+
+    class Camera:
+        """Newest camera frame, read on its own thread.
+
+        The phone (especially over Wi-Fi) delivers frames in bursts; the background must
+        keep moving at a steady rate regardless, so composing runs on its own clock.
+        """
+        def __init__(self):
+            self.frame, self.serial, self.ended = None, 0, False
+            self.lock = threading.Condition()
+            threading.Thread(target=self.read, daemon=True).start()
+
+        def read(self):
+            size = width * height * 3 // 2  # I420
+            while True:
+                data = read_exact(decoder.stdout, size)
+                with self.lock:
+                    if data is None:
+                        self.ended = True
+                    else:
+                        self.frame = np.frombuffer(data, np.uint8).reshape(height * 3 // 2, width)
+                        self.serial += 1
+                    self.lock.notify_all()
+                if data is None:
+                    return
+
+        def first(self):
+            with self.lock:
+                self.lock.wait_for(lambda: self.frame is not None or self.ended)
+
+    camera = Camera()
+    camera.first()
+    period = 1 / arguments.fps
+    deadline = time.monotonic()
+    seen, person, alpha = -1, None, None
     slow_since = None
     try:
-        while True:
-            data = read_exact(decoder.stdout, size)
-            if data is None:
-                break
-            frame = np.frombuffer(data, np.uint8).reshape(height, width, 3)
+        while not camera.ended:
             started = time.monotonic()
-            alpha = matte(frame)
+            with camera.lock:
+                raw, serial = camera.frame, camera.serial
+            if serial != seen:
+                # New camera frame: convert (OpenCV, multi-threaded) and re-matte.
+                person = cv2.cvtColor(raw, cv2.COLOR_YUV2BGR_I420)
+                alpha = matte(person)
+                seen = serial
             if state['background'] != current:
                 current = state['background']
                 try:
@@ -189,18 +225,24 @@ def main():
             scenery = backdrop.next()
             if state['mirror']:
                 scenery = cv2.flip(scenery, 1)
-            composed = cv2.blendLinear(frame, scenery, alpha, 1 - alpha)
+            composed = cv2.blendLinear(person, scenery, alpha, 1 - alpha)
             encoder.stdin.write(composed.data)
             output.write(preview_frame(composed, preview_width, preview_height).data)
             output.flush()
             spent = time.monotonic() - started
-            if spent > 1.2 / arguments.fps:
+            if spent > 1.2 * period:
                 slow_since = slow_since or started
                 if started - slow_since > 5:
                     print(f'Το φόντο καθυστερεί ({spent * 1000:.0f} ms/καρέ). Δοκίμασε μικρότερη ανάλυση.', file=sys.stderr, flush=True)
                     slow_since = started
             else:
                 slow_since = None
+            deadline += period
+            wait = deadline - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            elif wait < -3 * period:
+                deadline = time.monotonic()  # Fell behind: don't rush to catch up.
     except BrokenPipeError:
         pass
     finally:

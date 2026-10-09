@@ -9,7 +9,7 @@ import time
 from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 from PySide6.QtGui import QImage
 from .config import STATE
-from .live import LiveControls, commands, fit_width
+from .live import LiveControls, active, commands, fit_width
 from . import scene
 
 FRAME_WIDTH, FRAME_HEIGHT = 960, 540
@@ -146,13 +146,14 @@ class CaptureEngine(QObject):
         brightness = capture.exposure / 100
         contrast = 1.08 if capture.look == 'vivid' else 1
         saturation = {'natural': 1, 'warm': 1.05, 'mono': 0, 'vivid': 1.35}[capture.look]
-        filters.append(f'eq@tone=brightness={brightness}:contrast={contrast}:saturation={saturation}')
-        filters.append(f'colorbalance@warmth=rs={0.08 if capture.look == "warm" else 0}:bs={-0.06 if capture.look == "warm" else 0}')
+        enabled = active(capture)
+        filters.append(f'eq@tone=brightness={brightness}:contrast={contrast}:saturation={saturation}:enable={int(enabled["tone"])}')
+        filters.append(f'colorbalance@warmth=rs={0.08 if capture.look == "warm" else 0}:bs={-0.06 if capture.look == "warm" else 0}:enable={int(enabled["warmth"])}')
         width, height = capture.size.split('x')
         filters.extend([
             f'scale@fit=w={fit_width(capture)}:h=-2:eval=frame',
             f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:eval=frame',
-            f'rotate@turn=angle={capture.rotation}*PI/180:ow=iw:oh=ih:bilinear=0',
+            f'rotate@turn=angle={capture.rotation}*PI/180:ow=iw:oh=ih:bilinear=0:enable={int(enabled["turn"])}',
             f'hflip@mirror=enable={int(capture.mirror)}',
         ])
         return ','.join(filters)

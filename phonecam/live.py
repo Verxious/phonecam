@@ -111,8 +111,18 @@ def fit_width(capture):
     return width
 
 
+def active(capture):
+    """Which filters change the picture; the others are switched off (they cost CPU at 1080p)."""
+    return {
+        'tone': capture.exposure != 0 or capture.look != 'natural',
+        'warmth': capture.look == 'warm',
+        'turn': capture.rotation != 0,
+    }
+
+
 def commands(capture):
     saturation = {'natural': 1, 'warm': 1.05, 'mono': 0, 'vivid': 1.35}[capture.look]
+    enabled = active(capture)
     return [
         f'eq@tone brightness {capture.exposure / 100}',
         f'eq@tone contrast {1.08 if capture.look == "vivid" else 1}',
@@ -122,4 +132,7 @@ def commands(capture):
         f'scale@fit w {fit_width(capture)}',
         f'rotate@turn angle {capture.rotation}*PI/180',
         f'hflip@mirror enable {int(capture.mirror)}',
+        f'eq@tone enable {int(enabled["tone"])}',
+        f'colorbalance@warmth enable {int(enabled["warmth"])}',
+        f'rotate@turn enable {int(enabled["turn"])}',
     ]
