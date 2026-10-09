@@ -598,6 +598,33 @@ class Pad(QAbstractButton):
         painter.drawText(area.adjusted(10, 6, -10, 0), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop, detail)
 
 
+class LevelBar(QWidget):
+    """A simple peak meter: green, amber near the top, red when clipping."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.value = 0.0
+        self.hold = 0.0
+        self.setMinimumHeight(10)
+        self.setMaximumHeight(10)
+
+    def set_level(self, peak):
+        self.value = max(peak, self.value * 0.7)  # fast up, smooth fall
+        self.hold = max(peak, self.hold - 0.01)
+        self.update()
+
+    def paintEvent(self, _):
+        painter = QPainter(self)
+        area = QRectF(self.rect())
+        painter.fillRect(area, QColor('#12151b'))
+        # dB scale (-48..0) reads like a mixer meter.
+        position = lambda peak: max(0.0, min(1.0, (20 * np.log10(max(peak, 1e-6)) + 48) / 48))
+        width = area.width() * position(self.value)
+        colour = '#52d273' if self.value < 0.5 else ('#ffd60a' if self.value < 0.9 else '#ff4d6d')
+        painter.fillRect(QRectF(0, 0, width, area.height()), QColor(colour))
+        painter.fillRect(QRectF(area.width() * position(self.hold) - 2, 0, 2, area.height()), QColor('#edf0f6'))
+
+
 class AddPad(QAbstractButton):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -657,6 +684,14 @@ class SoundboardPage(QWidget):
         self.stop.clicked.connect(self.player.stop_all)
         deck.addWidget(self.stop, 1)
         layout.addLayout(deck)
+        meter_row = QHBoxLayout()
+        meter_label = QLabel('Στάθμη PhoneCam Mic')
+        meter_label.setObjectName('muted')
+        meter_row.addWidget(meter_label)
+        self.meter = LevelBar()
+        meter_row.addWidget(self.meter, 1)
+        layout.addLayout(meter_row)
+        self.meter_thread = None
         options = QHBoxLayout()
         self.voice = QCheckBox('Η φωνή μου μαζί')
         self.hear = QCheckBox('Ακούω κι εγώ τους ήχους')
@@ -700,7 +735,19 @@ class SoundboardPage(QWidget):
             self.window.preferences.data['sound_master'] = value
             self.window.preferences.save()
 
+    def update_meter(self):
+        running = self.meter_thread is not None
+        if self.window.router.active and not running:
+            self.meter_thread = sound.Meter(self)
+            self.meter_thread.level.connect(self.meter.set_level)
+            self.meter_thread.start()
+        elif not self.window.router.active and running:
+            self.meter_thread.stop()
+            self.meter_thread = None
+            self.meter.set_level(0)
+
     def update_mic(self):
+        self.update_meter()
         active = self.window.router.active
         self.air.setChecked(active)
         self.air.setText('● ON AIR · «PhoneCam Mic»' if active else 'ON AIR · ανενεργό')
@@ -708,8 +755,11 @@ class SoundboardPage(QWidget):
             self.air.setEnabled(False)
             self.hint.setText('Λείπουν τα pactl / paplay. Εγκατάστησε το pulseaudio-utils (Ubuntu/Debian/Fedora) ή libpulse (Arch).')
         elif active:
-            self.hint.setText('Discord → Ρυθμίσεις → Φωνή & Βίντεο → Συσκευή εισόδου: «PhoneCam Mic». '
-                              'Για μουσική κλείσε την καταστολή θορύβου του Discord, αλλιώς κόβει τους ήχους.')
+            self.hint.setText('Discord → Ρυθμίσεις → Φωνή & Βίντεο: Συσκευή εισόδου «PhoneCam Mic» · '
+                              'Καταστολή θορύβου: Καμία · Ακύρωση ηχούς: off · Αυτόματος έλεγχος έντασης: off · '
+                              'Προηγμένη ανίχνευση φωνής: off · Ευαισθησία εισόδου: όχι αυτόματη, slider χαμηλά. '
+                              'Αλλιώς το Discord κρατά μόνο ομιλία και κόβει ή χαμηλώνει τους ήχους. '
+                              'Αν η στάθμη εδώ χτυπά ψηλά αλλά δεν σε ακούνε, φταίνε αυτές οι ρυθμίσεις.')
         else:
             self.hint.setText('Πάτα ON AIR για να ακούγονται οι ήχοι στο Discord. Χωρίς αυτό παίζουν μόνο στα ηχεία σου.')
 

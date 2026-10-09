@@ -917,6 +917,8 @@ class Window(QMainWindow):
         self.android.commands.cancel()
         self.virtual.commands.cancel()
         self.player.stop_all()
+        if self.soundboard.meter_thread:
+            self.soundboard.meter_thread.stop()
         if self.router.active:
             self.router.stop()
         self.engine.close()

@@ -10,7 +10,8 @@ import shutil
 import subprocess
 import time
 import uuid
-from PySide6.QtCore import QObject, QProcess, Signal
+import numpy as np
+from PySide6.QtCore import QObject, QProcess, QThread, Signal
 
 SOUNDS_SINK = 'phonecam_sounds'
 MIX_SINK = 'phonecam_mix'
@@ -98,6 +99,35 @@ class Router:
         self.active = False
 
 
+class Meter(QThread):
+    """Level of what really leaves «PhoneCam Mic» (so you can tell PhoneCam from Discord)."""
+    level = Signal(float)  # peak, 0..1, about 20 times a second
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.process = None
+
+    def run(self):
+        try:
+            self.process = subprocess.Popen(['parec', f'--device={MIC}', '--format=s16le', '--channels=1', '--rate=8000',
+                '--latency-msec=50', '--client-name=PhoneCam meter'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError:
+            return
+        block = 400 * 2  # 50 ms of 8 kHz mono
+        while not self.isInterruptionRequested():
+            data = self.process.stdout.read(block)
+            if not data:
+                break
+            samples = np.frombuffer(data[:len(data) // 2 * 2], np.int16)
+            self.level.emit(float(np.abs(samples).max()) / 32768 if samples.size else 0.0)
+
+    def stop(self):
+        self.requestInterruption()
+        if self.process:
+            self.process.kill()
+        self.wait(1000)
+
+
 class Player(QObject):
     """Plays trimmed sounds through FFmpeg; several may play at once."""
     started = Signal(str)
@@ -132,7 +162,8 @@ class Player(QObject):
             # Hold that part in memory and repeat it until stopped.
             filters.append(f'aloop=loop=-1:size={max(1, int(sound.length * 48000))}')
         arguments += ['-af', ','.join(filters), '-ac', '2', '-f', 's16le', '-']
-        playback = ['--raw', '--format=s16le', '--rate=48000', '--channels=2', '--client-name=PhoneCam',
+        # Short buffer: paplay's default (~170 ms here) made every pad start late.
+        playback = ['--raw', '--format=s16le', '--rate=48000', '--channels=2', '--client-name=PhoneCam', '--latency-msec=30',
                     '--stream-name=' + re.sub(r'\s+', ' ', sound.name)[:40]]
         if to_mic:
             playback.append(f'--device={SOUNDS_SINK}')
