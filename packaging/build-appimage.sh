@@ -26,7 +26,7 @@ chmod +x "$CACHE/python.AppImage"
 (cd "$WORK" && rm -rf squashfs-root && "$CACHE/python.AppImage" --appimage-extract >/dev/null && mv squashfs-root "$APPDIR")
 PY=$APPDIR/opt/python3.12/bin/python3.12
 "$PY" -m pip install --quiet --no-warn-script-location --upgrade pip
-"$PY" -m pip install --quiet --no-warn-script-location 'PySide6-Essentials>=6.6,<7' 'numpy>=1.26' 'opencv-python-headless>=4.8' pyzmq
+"$PY" -m pip install --quiet --no-warn-script-location 'PySide6-Essentials>=6.6,<7' 'numpy>=1.26' 'opencv-python-headless>=4.8' pyzmq certifi
 
 echo '== Trim unused Qt (QML/Quick, tools, translations)'
 QT=$("$PY" -c 'import PySide6,os;print(os.path.dirname(PySide6.__file__))')
@@ -86,6 +86,13 @@ export PATH="$HERE/usr/bin:$HERE/opt/python3.12/bin:$PATH"
 # Bundled X11 helpers only fill gaps; host graphics drivers keep priority.
 export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$HERE/usr/lib"
 export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+# The bundled OpenSSL does not know where this distribution keeps its CA certificates.
+if [ -z "${SSL_CERT_FILE:-}" ]; then
+    for bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/ca-bundle.pem /etc/ssl/cert.pem; do
+        [ -s "$bundle" ] && export SSL_CERT_FILE="$bundle" && break
+    done
+    [ -n "${SSL_CERT_FILE:-}" ] || export SSL_CERT_FILE="$(echo "$HERE"/opt/python3.12/lib/python3.12/site-packages/certifi/cacert.pem)"
+fi
 unset PYTHONHOME PYTHONPATH
 exec "$HERE/opt/python3.12/bin/python3.12" -s -m phonecam "$@"
 EOF

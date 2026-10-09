@@ -850,6 +850,11 @@ def self_test():
     check('scrcpy', lambda: subprocess.run(['scrcpy', '--version'], capture_output=True, text=True).stdout.split()[1])
     check('adb', lambda: subprocess.run(['adb', 'version'], capture_output=True, text=True).stdout.split('\n')[0])
     check('libzmq', lambda: ctypes.CDLL(zmq_library()).zmq_ctx_new and zmq_library())
+    def https():
+        import urllib.request
+        with urllib.request.urlopen('https://api.github.com', timeout=15) as response:
+            return f'ok ({response.status})'
+    check('https', https)
     check('matte', lambda: str(Matte(320, 180)(numpy.zeros((180, 320, 3), numpy.uint8)).shape))
     check('driver', lambda: 'installed' if driver.available() else 'missing (offered in app): ' + (driver.install_script() or 'unknown distro'))
     def window():
