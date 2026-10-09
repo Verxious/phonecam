@@ -13,6 +13,9 @@ from .live import LiveControls, commands, fit_width
 from . import scene
 
 FRAME_WIDTH, FRAME_HEIGHT = 960, 540
+# YUYV is what physical webcams deliver, so every consumer (Discord, Chromium, Zoom,
+# OBS) reads it; planar YUV 4:2:0 confused some apps on older v4l2loopback drivers.
+OUTPUT_FORMAT = 'yuyv422'
 FRAME_BYTES = FRAME_WIDTH * FRAME_HEIGHT * 3
 
 
@@ -201,7 +204,7 @@ class CaptureEngine(QObject):
             '-y', '-hide_banner', '-loglevel', 'error', '-probesize', '32768', '-analyzeduration', '1',
             '-flags', 'low_delay', '-threads', '1', '-f', 'matroska', '-i', str(self.pipe),
             '-filter_complex_threads', '2', '-filter_complex', graph,
-            '-map', '[webcam]', '-an', '-pix_fmt', 'yuv420p', '-c:v', 'rawvideo', '-threads', '1', '-fps_mode', 'passthrough', '-f', 'v4l2', self.device,
+            '-map', '[webcam]', '-an', '-pix_fmt', OUTPUT_FORMAT, '-c:v', 'rawvideo', '-threads', '1', '-fps_mode', 'passthrough', '-f', 'v4l2', self.device,
             '-map', '[screen]', '-an',
             '-fps_mode', 'passthrough', '-pix_fmt', 'rgb24', '-c:v', 'rawvideo', '-threads', '1',
             '-flush_packets', '1', '-f', 'rawvideo', 'pipe:1',

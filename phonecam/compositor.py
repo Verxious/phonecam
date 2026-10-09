@@ -16,6 +16,7 @@ import numpy as np
 import json
 from pathlib import Path
 from .scene import fit_graph, frame_still, guided, is_video, resolve_fit
+from .engine import OUTPUT_FORMAT
 from .scene import CACHE
 from .weights import PERSON
 
@@ -148,7 +149,7 @@ def main():
     encoder = spawn([
         'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
         '-f', 'rawvideo', '-pix_fmt', 'bgr24', '-s', f'{width}x{height}', '-r', str(arguments.fps), '-i', 'pipe:0',
-        '-an', '-pix_fmt', 'yuv420p', '-c:v', 'rawvideo', '-f', arguments.format, arguments.device,
+        '-an', '-pix_fmt', OUTPUT_FORMAT, '-c:v', 'rawvideo', '-f', arguments.format, arguments.device,
     ], stdin=subprocess.PIPE, bufsize=0)
     backdrop = Backdrop(arguments.background, width, height, arguments.fit)
     current = (arguments.background, arguments.fit)

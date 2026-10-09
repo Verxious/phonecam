@@ -11,7 +11,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
     QFormLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
     QSizePolicy, QSlider, QSpinBox, QSplitter, QVBoxLayout, QWidget)
-from . import driver, library, scene, updater, weights, youtube
+from . import diagnostics, driver, library, scene, updater, weights, youtube
 from .android import Android
 from .config import Preferences
 from .engine import CaptureEngine
@@ -333,6 +333,10 @@ class Window(QMainWindow):
         self.help.setWordWrap(True)
         self.help.setObjectName('muted')
         panel.addWidget(self.help)
+        report = QPushButton('Διαγνωστικά · αντιγραφή')
+        report.setToolTip('Αντιγράφει πληροφορίες συστήματος για βοήθεια (χωρίς διευθύνσεις ροής ή προσωπικά στοιχεία).')
+        report.clicked.connect(self.show_diagnostics)
+        panel.addWidget(report)
         splitter.addWidget(right)
         splitter.setSizes([735, 315])
         self.source.currentIndexChanged.connect(self.source_changed)
@@ -754,6 +758,15 @@ class Window(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, 'pixmap'):
             self.paint_preview()
+
+    def show_diagnostics(self):
+        text = diagnostics.report(self)
+        QApplication.clipboard().setText(text)
+        box = QMessageBox(self)
+        box.setWindowTitle('Διαγνωστικά')
+        box.setText('Αντιγράφηκαν· επικόλλησέ τα σε όποιον σε βοηθάει.')
+        box.setDetailedText(text)
+        box.exec()
 
     def offer_driver(self):
         script = driver.install_script()
