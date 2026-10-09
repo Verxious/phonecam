@@ -172,6 +172,8 @@ class Waveform(QWidget):
             painter.drawPolygon([QPointF(x - 6, 0), QPointF(x + 6, 0), QPointF(x, 8)])
 
     def set_playhead(self, seconds):
+        if self.drag and self.drag[0] == 'playhead':
+            return  # The user is holding the line.
         self.playhead = seconds
         low, high = self.view
         if seconds is not None and not low <= seconds <= high:
@@ -181,11 +183,21 @@ class Waveform(QWidget):
             self.view = (low, low + span)
         self.update()
 
+    def on_playhead(self, x, y):
+        """The white line can be grabbed; its triangle on top wins over selection edges."""
+        if self.playhead is None or abs(x - self.x_of(self.playhead)) >= 8:
+            return False
+        left, right = self.x_of(self.start), self.x_of(self.start + self.length)
+        return y < 18 or (abs(x - left) >= 8 and abs(x - right) >= 8)
+
     def mousePressEvent(self, event):
-        x = event.position().x()
+        x, y = event.position().x(), event.position().y()
         self.pressed_at = x
         left, right = self.x_of(self.start), self.x_of(self.start + self.length)
-        if abs(x - left) < 8:
+        if self.on_playhead(x, y):
+            self.drag = ('playhead', None)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif abs(x - left) < 8:
             self.drag = ('start', None)
         elif abs(x - right) < 8:
             self.drag = ('end', None)
@@ -197,7 +209,15 @@ class Waveform(QWidget):
         self.cursor = x
         left, right = self.x_of(self.start), self.x_of(self.start + self.length)
         near_edge = abs(x - left) < 8 or abs(x - right) < 8
-        self.setCursor(Qt.CursorShape.SizeHorCursor if near_edge or (self.drag and self.drag[0] != 'new') else Qt.CursorShape.IBeamCursor)
+        if self.drag and self.drag[0] == 'playhead':
+            # Scrub: the line follows the mouse; listening moves there on release.
+            self.playhead = self.seconds_at(x)
+            self.update()
+            return
+        if not self.drag and self.on_playhead(x, event.position().y()):
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        else:
+            self.setCursor(Qt.CursorShape.SizeHorCursor if near_edge or (self.drag and self.drag[0] != 'new') else Qt.CursorShape.IBeamCursor)
         if self.drag and self.drag[0] == 'new' and abs(x - (self.pressed_at or x)) < 4:
             self.update()
             return  # Not a drag yet: may still be a click to jump.
@@ -218,7 +238,10 @@ class Waveform(QWidget):
 
     def mouseReleaseEvent(self, event):
         x = event.position().x()
-        if self.drag and self.drag[0] == 'new' and abs(x - (self.pressed_at or x)) < 4:
+        if self.drag and self.drag[0] == 'playhead':
+            self.drag = None
+            self.seek.emit(self.seconds_at(x))
+        elif self.drag and self.drag[0] == 'new' and abs(x - (self.pressed_at or x)) < 4:
             self.seek.emit(self.seconds_at(x))
         self.drag = None
         self.pressed_at = None
@@ -238,7 +261,7 @@ class SoundEditor(QDialog):
         self.total = length_of(item.path)
         self.accent = colour(item, index)
         self.setWindowTitle('Ήχος')
-        self.setMinimumWidth(620)
+        self.setMinimumWidth(660)
         layout = QVBoxLayout(self)
         self.name = QLineEdit(item.name)
         self.name.setPlaceholderText('Όνομα pad')
@@ -250,6 +273,11 @@ class SoundEditor(QDialog):
         self.play_button = QPushButton('▶ Play')
         self.play_button.setToolTip('Ακούς όλο τον ήχο από τη λευκή γραμμή (Space)')
         self.play_button.clicked.connect(self.play_pause)
+        self.selection_button = QPushButton('▶ Επιλογή')
+        self.selection_button.setMinimumWidth(130)
+        self.selection_button.setObjectName('playselection')
+        self.selection_button.setToolTip('Παίζει μόνο το κομμάτι που διάλεξες (με επανάληψη αν είναι τσεκαρισμένη)')
+        self.selection_button.clicked.connect(self.play_selection)
         stop = QPushButton('■ Stop')
         stop.clicked.connect(self.stop_listening)
         self.clock = QLabel()
@@ -260,19 +288,27 @@ class SoundEditor(QDialog):
         mark_out = QPushButton('Τέλος εδώ ⟧')
         mark_out.setToolTip('Το κομμάτι τελειώνει εκεί που ακούς τώρα')
         mark_out.clicked.connect(self.mark_out)
-        zoom_in = QPushButton('🔍 Επιλογή')
+        zoom_in = QPushButton('🔍 Zoom στην επιλογή')
         zoom_in.setToolTip('Zoom στο κομμάτι που διάλεξες (ή ροδέλα πάνω στο κύμα)')
         zoom_in.clicked.connect(lambda: self.wave.show_span(self.start.value(), self.length.value()))
         zoom_out = QPushButton('Όλο')
         zoom_out.setToolTip('Δείξε όλο τον ήχο')
         zoom_out.clicked.connect(lambda: (setattr(self.wave, 'view', (0.0, self.wave.total)), self.wave.update()))
-        for widget in (self.play_button, stop, self.clock, zoom_in, zoom_out):
+        # Row 1: listening. Row 2: view and cue points.
+        for widget in (self.selection_button, self.play_button, stop):
             transport.addWidget(widget)
+        transport.addSpacing(8)
+        transport.addWidget(self.clock)
         transport.addStretch()
-        transport.addWidget(mark_in)
-        transport.addWidget(mark_out)
         layout.addLayout(transport)
-        hint = QLabel('Play για να ακούσεις · κλικ στο κύμα = πήγαινε εκεί · σύρε = διάλεξε κομμάτι · ροδέλα = zoom · «Αρχή/Τέλος εδώ» την ώρα που ακούς')
+        cues = QHBoxLayout()
+        cues.addWidget(zoom_in)
+        cues.addWidget(zoom_out)
+        cues.addStretch()
+        cues.addWidget(mark_in)
+        cues.addWidget(mark_out)
+        layout.addLayout(cues)
+        hint = QLabel('Play για να ακούσεις · σύρε τη λευκή γραμμή ή κάνε κλικ στο κύμα = πήγαινε εκεί · σύρε στο κύμα = διάλεξε κομμάτι · ροδέλα = zoom · «Αρχή/Τέλος εδώ» την ώρα που ακούς')
         hint.setObjectName('muted')
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -311,9 +347,9 @@ class SoundEditor(QDialog):
         self.span = QLabel()
         self.span.setObjectName('muted')
         layout.addWidget(self.span)
-        preview = QPushButton('▶ Δοκιμή επιλογής (μόνο στα ηχεία σου)')
-        preview.clicked.connect(self.preview)
-        layout.addWidget(preview)
+        heard = QLabel('Η ακρόαση εδώ παίζει μόνο στα ηχεία σου.')
+        heard.setObjectName('muted')
+        layout.addWidget(heard)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -329,6 +365,7 @@ class SoundEditor(QDialog):
         # Listening: where the playhead is, and when playback from there began.
         self.position = item.start
         self.listening_since = None
+        self.selection = None  # (start, length, loop) while only the chosen part plays
         self.wave.seek.connect(self.jump)
         self.player.stopped.connect(self.playback_stopped)
         self.ticker = QTimer(self)
@@ -343,29 +380,58 @@ class SoundEditor(QDialog):
     def now(self):
         if self.listening_since is None:
             return self.position
-        return min(self.position + time.monotonic() - self.listening_since, self.total or 1e9)
+        elapsed = time.monotonic() - self.listening_since
+        if self.selection:
+            begin, length, loop = self.selection
+            return begin + (elapsed % length if loop else min(elapsed, length))
+        return min(self.position + elapsed, self.total or 1e9)
 
     def update_clock(self):
         self.clock.setText(f'{clock(self.now())} / {clock(self.total)}')
 
+    def show_idle(self):
+        self.listening_since = None
+        self.selection = None
+        self.play_button.setText('▶ Play')
+        self.selection_button.setText('▶ Επιλογή')
+        self.ticker.stop()
+
     def listen_from(self, seconds):
+        """The whole sound from ``seconds`` on."""
+        self.player.stop('listen')
+        self.selection = None
         self.position = max(0.0, min(seconds, max(0.0, (self.total or seconds) - 0.05)))
         remaining = (self.total - self.position) if self.total else 600
         whole = replace(self.selected(), identifier='listen', start=self.position, length=max(0.05, remaining), loop=False)
-        self.player.stop('preview')
         self.player.play(whole, to_mic=False)
         self.listening_since = time.monotonic()
         self.play_button.setText('❚❚ Pause')
+        self.selection_button.setText('▶ Επιλογή')
+        self.ticker.start(30)
+
+    def play_selection(self):
+        """Only the chosen part, exactly as the pad will play it."""
+        if self.selection and self.listening_since is not None:
+            self.stop_listening()
+            return
+        item = replace(self.selected(), identifier='listen')
+        self.player.stop('listen')
+        self.selection = (item.start, item.length, item.loop)
+        self.position = item.start
+        self.player.play(item, to_mic=False)
+        self.listening_since = time.monotonic()
+        self.play_button.setText('▶ Play')
+        self.selection_button.setText('■ Επιλογή')
         self.ticker.start(30)
 
     def play_pause(self):
-        if self.listening_since is not None:
-            self.position = self.now()
-            self.listening_since = None
+        if self.listening_since is not None and not self.selection:
+            self.position = self.now()  # Pause where we are.
             self.player.stop('listen')
-            self.play_button.setText('▶ Play')
-            self.ticker.stop()
+            self.show_idle()
         else:
+            if self.selection:
+                self.position = self.now()
             if self.total and self.position >= self.total - 0.05:
                 self.position = 0.0
             self.listen_from(self.position)
@@ -373,10 +439,8 @@ class SoundEditor(QDialog):
         self.update_clock()
 
     def stop_listening(self):
-        self.listening_since = None
         self.player.stop('listen')
-        self.play_button.setText('▶ Play')
-        self.ticker.stop()
+        self.show_idle()
         self.position = self.start.value()
         self.wave.set_playhead(self.position)
         self.update_clock()
@@ -394,14 +458,13 @@ class SoundEditor(QDialog):
         self.update_clock()
 
     def playback_stopped(self, identifier):
-        if identifier == 'listen' and self.listening_since is not None:
-            # Reached the end of the file.
-            self.position = self.now()
-            self.listening_since = None
-            self.play_button.setText('▶ Play')
-            self.ticker.stop()
-            self.wave.set_playhead(self.position)
-            self.update_clock()
+        if identifier != 'listen' or self.listening_since is None:
+            return
+        # Reached the end: the whole file, or the chosen part (back to its start).
+        self.position = self.start.value() if self.selection else self.now()
+        self.show_idle()
+        self.wave.set_playhead(self.position)
+        self.update_clock()
 
     def mark_in(self):
         here = self.now()
@@ -462,11 +525,6 @@ class SoundEditor(QDialog):
     def selected(self):
         return replace(self.item, name=self.name.text().strip() or self.item.name, start=self.start.value(),
             length=self.length.value(), volume=self.volume.value(), loop=self.loop.isChecked())
-
-    def preview(self):
-        if self.listening_since is not None:
-            self.play_pause()
-        self.player.play(replace(self.selected(), identifier='preview', loop=False), to_mic=False)
 
     def done(self, result):
         self.ticker.stop()

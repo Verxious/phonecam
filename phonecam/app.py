@@ -181,6 +181,8 @@ class Window(QMainWindow):
             QPushButton#onair:checked { background: #b3261e; border-color: #ff6b6b; color: #ffffff; }
             QPushButton#stopall { background: #3a1d22; border-color: #7a2e38; color: #ff9aa5; font-weight: 600; font-size: 15px; }
             QPushButton#stopall:hover { background: #5a232c; }
+            QPushButton#playselection { background: #c62828; border-color: #ff5252; color: #ffffff; font-weight: 600; }
+            QPushButton#playselection:hover { background: #e53935; }
             QListWidget { background: #12151b; border: 1px solid #303745; border-radius: 8px; padding: 4px; outline: 0; }
             QListWidget::item { padding: 6px; border-radius: 6px; color: #edf0f6; }
             QListWidget::item:hover { background: #1d232d; }

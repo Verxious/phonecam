@@ -324,6 +324,17 @@ class BackgroundTests(unittest.TestCase):
         QTest.mouseClick(wave, Qt.MouseButton.LeftButton, pos=QPoint(500, 50))   # a click jumps, no selection
         self.assertEqual(round(jumps[-1], 1), 3.0)
         self.assertEqual(spans[-1], (2.5, 1.0))
+        # Drag the white line by its triangle (even over a selection edge): it scrubs, no new selection.
+        wave.set_playhead(2.5)                                                    # on the left edge
+        selections = len(spans)
+        QTest.mousePress(wave, Qt.MouseButton.LeftButton, pos=QPoint(250, 5))
+        QTest.mouseMove(wave, QPoint(400, 5))
+        wave.set_playhead(2.6)                                                    # playback ticks are ignored while held
+        QTest.mouseMove(wave, QPoint(600, 5))
+        self.assertAlmostEqual(wave.playhead, 3.2, places=1)
+        QTest.mouseRelease(wave, Qt.MouseButton.LeftButton, pos=QPoint(600, 5))
+        self.assertEqual(round(jumps[-1], 1), 3.2)
+        self.assertEqual(len(spans), selections)
         Android.refresh = lambda *_: None
         window = Window()
         played = []
