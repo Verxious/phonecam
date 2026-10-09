@@ -411,9 +411,11 @@ class Window(QMainWindow):
             widget.setEnabled(not busy and not self.engine.want_capture)
 
     def connect_capture(self):
-        missing = [name for name in ('adb', 'scrcpy', 'ffmpeg', 'v4l2loopback-ctl') if not shutil.which(name)]
+        # The virtual camera driver is checked (and offered) later; these must exist up front.
+        missing = [name for name in ('adb', 'scrcpy', 'ffmpeg') if not shutil.which(name)]
         if missing:
-            self.error('Λείπουν εργαλεία: ' + ', '.join(missing) + '. Τρέξε ./install.sh στον φάκελο του PhoneCam.')
+            hint = 'Κατέβασε ξανά το AppImage.' if os.environ.get('APPIMAGE') else 'Τρέξε ./install.sh στον φάκελο του PhoneCam.'
+            self.error('Λείπουν εργαλεία: ' + ', '.join(missing) + '. ' + hint)
             return
         self.capture = replace(self.capture, source=self.source.currentData())
         self.set_busy(True)

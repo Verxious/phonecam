@@ -184,6 +184,27 @@ class BackgroundTests(unittest.TestCase):
             finally:
                 loop.unlink()
 
+    def test_missing_driver_is_offered_not_reported(self):
+        from unittest import mock
+        from PySide6.QtCore import QCoreApplication
+        from phonecam import virtual
+        app = QCoreApplication.instance() or QCoreApplication([])
+        offered, errors = [], []
+        camera = virtual.VirtualCamera()
+        camera.driver_missing.connect(lambda: offered.append(True))
+        camera.error.connect(errors.append)
+        with mock.patch.object(virtual.Path, 'glob', return_value=[]):
+            with mock.patch.object(virtual, 'available', return_value=False):
+                camera.prepare()
+            # Driver loaded by someone else, but v4l2loopback-ctl is not installed.
+            real_exists = Path.exists
+            with mock.patch.object(virtual, 'available', return_value=True), \
+                 mock.patch.object(virtual, 'tool', return_value='v4l2loopback-ctl'), \
+                 mock.patch.object(virtual.Path, 'exists', lambda self: True if str(self) == '/sys/module/v4l2loopback' else real_exists(self)):
+                camera.prepare()
+        self.assertEqual(offered, [True, True])
+        self.assertEqual(errors, [])
+
     def test_matte_and_preview_shapes(self):
         frame = np.full((360, 640, 3), 90, np.uint8)
         alpha = Matte(640, 360)(frame)
