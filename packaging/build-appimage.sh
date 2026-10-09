@@ -3,6 +3,8 @@
 # Only the v4l2loopback kernel driver stays on the host (the app offers to install it).
 #   packaging/build-appimage.sh [owner/repo for updates]
 # Needs: curl, tar, docker (for old-glibc X11 helper libraries).
+# Qt < 6.10 and numpy < 2.4: newer wheels need x86-64-v2 (SSE4.2, POPCNT) and would
+# refuse to start on older processors ("This Qt build requires the following features").
 set -euo pipefail
 cd -- "$(dirname -- "$0")/.."
 ROOT=$PWD
@@ -26,7 +28,7 @@ chmod +x "$CACHE/python.AppImage"
 (cd "$WORK" && rm -rf squashfs-root && "$CACHE/python.AppImage" --appimage-extract >/dev/null && mv squashfs-root "$APPDIR")
 PY=$APPDIR/opt/python3.12/bin/python3.12
 "$PY" -m pip install --quiet --no-warn-script-location --upgrade pip
-"$PY" -m pip install --quiet --no-warn-script-location 'PySide6-Essentials>=6.6,<7' 'numpy>=1.26' 'opencv-python-headless>=4.8' pyzmq certifi
+"$PY" -m pip install --quiet --no-warn-script-location 'PySide6-Essentials>=6.6,<6.10' 'numpy>=1.26,<2.4' 'opencv-python-headless>=4.8' pyzmq certifi
 
 echo '== Trim unused Qt (QML/Quick, tools, translations)'
 QT=$("$PY" -c 'import PySide6,os;print(os.path.dirname(PySide6.__file__))')

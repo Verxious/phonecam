@@ -6,6 +6,8 @@ Native Linux application that turns a phone camera into a webcam for Discord, OB
 
 **AppImage (any modern x86-64 Linux):** download `PhoneCam-x86_64.AppImage` from [Releases](https://github.com/Verxious/phonecam/releases/latest), make it executable (file properties → *Allow executing*, or `chmod +x`) and open it. Python, Qt, OpenCV, FFmpeg, scrcpy and adb are inside. The only thing it cannot carry is the kernel driver for the virtual camera (v4l2loopback); on first connect PhoneCam offers to install it with your distribution's package manager (asks for the admin password once). The AppImage adds itself to the application menu and shows **Νέα έκδοση** when a newer release exists; one click downloads it and restarts.
 
+Works on older processors too: the AppImage uses Qt 6.9 and numpy 2.3, because newer wheels require SSE4.2 and POPCNT (x86-64-v2) and stop with *“This Qt build requires the following features: sse4.2 popcnt”*. Tested under emulation of an Intel Core 2 (Penryn).
+
 **From source:** `git clone https://github.com/Verxious/phonecam && phonecam/install.sh`. The installer checks every dependency and installs what is missing (Arch, Debian/Ubuntu, Fedora). A source checkout updates itself: new commits are fetched in the background and applied on the next start.
 
 ## Run

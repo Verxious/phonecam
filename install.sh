@@ -25,13 +25,24 @@ bad() { say "  ✗ $*"; }
 
 # --- what is there -----------------------------------------------------------
 
-python_for_app() {
-    if [ -x "$VENV/bin/python" ]; then echo "$VENV/bin/python"; return; fi
-    for candidate in python3 python3.14 python3.13 python3.12 python3.11; do
-        if command -v "$candidate" >/dev/null && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
+STANDALONE="$DATA/python"
+
+new_enough() { "$1" -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; }
+
+base_python() {
+    # A Python 3.11+ to build the private environment from (never the environment itself).
+    local candidate
+    for candidate in python3 python3.14 python3.13 python3.12 python3.11 "$STANDALONE/bin/python3"; do
+        if command -v "$candidate" >/dev/null && new_enough "$candidate"; then
             command -v "$candidate"; return
         fi
     done
+}
+
+python_for_app() {
+    # The private environment only counts if it actually runs (a half-made one does not).
+    if [ -x "$VENV/bin/python" ] && new_enough "$VENV/bin/python"; then echo "$VENV/bin/python"; return; fi
+    base_python
 }
 
 python_ok() {
@@ -96,15 +107,46 @@ install_scrcpy_release() {
     good "scrcpy στο $folder"
 }
 
+install_standalone_python() {
+    # Distributions such as Ubuntu 22.04, Mint 21 or Debian 11 ship Python 3.10 or older.
+    local url
+    [ "$(uname -m)" = x86_64 ] || { bad "Χρειάζεται Python 3.11+ — εγκατάστησέ την από τη διανομή σου."; return 1; }
+    url=$(curl -fsSL https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest |
+        grep -o 'https://[^"]*cpython-3\.12\.[0-9]*%2B[0-9]*-x86_64-unknown-linux-gnu-install_only_stripped\.tar\.gz' | head -1)
+    [ -n "$url" ] || { bad "Δεν βρέθηκε αυτόνομη Python για λήψη."; return 1; }
+    say "  → λήψη Python 3.12 (αυτόνομη, μόνο για το PhoneCam)"
+    rm -rf "$STANDALONE" && mkdir -p "$STANDALONE"
+    curl -fsSL "$url" | tar -xz -C "$STANDALONE" --strip-components=1 || { rm -rf "$STANDALONE"; return 1; }
+    new_enough "$STANDALONE/bin/python3" && good "Python $("$STANDALONE/bin/python3" -c 'import platform;print(platform.python_version())') στο $STANDALONE"
+}
+
 install_python_env() {
     local python
-    python=$(python_for_app)
+    python=$(base_python)
+    if [ -z "$python" ]; then
+        install_standalone_python || return 1
+        python=$(base_python)
+    fi
     [ -n "$python" ] || { bad "Χρειάζεται Python 3.11 ή νεότερη."; return 1; }
-    say "  → ιδιωτικό περιβάλλον Python στο $VENV"
+    say "  → ιδιωτικό περιβάλλον Python στο $VENV ($python)"
     rm -rf "$VENV"
-    "$python" -m venv "$VENV" || return 1
-    "$VENV/bin/python" -m pip install --quiet --upgrade pip &&
-        "$VENV/bin/python" -m pip install --quiet 'PySide6>=6.6,<7' 'numpy>=1.26' 'opencv-python-headless>=4.8'
+    if ! "$python" -m venv "$VENV" 2>/dev/null; then
+        # Debian/Ubuntu split venv out of Python; the standalone build always has it.
+        [ "$python" = "$STANDALONE/bin/python3" ] || install_standalone_python || return 1
+        python="$STANDALONE/bin/python3"
+        rm -rf "$VENV"
+        "$python" -m venv "$VENV" || return 1
+    fi
+    local qt='PySide6>=6.6,<7' numpy='numpy>=1.26'
+    # Qt 6.10+ and numpy 2.4+ wheels need SSE4.2 + POPCNT (x86-64-v2); older CPUs get the last compatible ones.
+    if ! grep -qw sse4_2 /proc/cpuinfo || ! grep -qw popcnt /proc/cpuinfo; then
+        qt='PySide6>=6.6,<6.10' numpy='numpy>=1.26,<2.4'
+        say "  → παλιότερος επεξεργαστής (χωρίς SSE4.2/POPCNT): Qt 6.9 και numpy 2.3"
+    fi
+    say "  → εγκατάσταση PySide6, numpy, OpenCV (μερικά λεπτά)"
+    "$VENV/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade pip &&
+        "$VENV/bin/python" -m pip install --quiet --disable-pip-version-check "$qt" "$numpy" 'opencv-python-headless>=4.8' ||
+        { rm -rf "$VENV"; bad "Αποτυχία εγκατάστασης πακέτων Python."; return 1; }
 }
 
 kernel_headers_arch() {
@@ -128,7 +170,7 @@ install_missing() {
             pacman:loopback) driver+=(v4l2loopback-dkms v4l2loopback-utils $(kernel_headers_arch)) ;;
             pacman:git) packages+=(git) ;;
             pacman:polkit) packages+=(polkit) ;;
-            apt:python) packages+=(python3 python3-venv python3-pip) ;;
+            apt:python) packages+=(python3 python3-venv python3-pip curl ca-certificates) ;;
             apt:ffmpeg) packages+=(ffmpeg) ;;
             apt:adb) packages+=(adb) ;;
             apt:loopback) driver+=(v4l2loopback-dkms v4l2loopback-utils "linux-headers-$(uname -r)") ;;
