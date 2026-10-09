@@ -15,7 +15,7 @@ from . import driver, library, scene, updater, weights, youtube
 from .android import Android
 from .config import Preferences
 from .engine import CaptureEngine
-from .network import UsbStream
+from .network import StreamCheck, UsbStream
 from .virtual import VirtualCamera
 
 ROOT = Path(__file__).resolve().parent
@@ -450,9 +450,24 @@ class Window(QMainWindow):
                 self.stream_ready(self.original_url)
 
     def stream_ready(self, url):
-        if self.preparing:
-            self.capture = replace(self.capture, url=url)
-            self.virtual.prepare()
+        if not self.preparing:
+            return
+        self.status.setText('Έλεγχος ροής από το κινητό…')
+        check = StreamCheck(url, self.usb.isChecked(), self)
+        check.result.connect(self.stream_checked)
+        check.finished.connect(check.deleteLater)
+        self.stream_check = check
+        check.start()
+
+    def stream_checked(self, url, problem):
+        if not self.preparing:
+            return
+        if problem:
+            self.error(problem)
+            self.usb_stream.release()
+            return
+        self.capture = replace(self.capture, url=url)
+        self.virtual.prepare()
 
     def cameras_found(self, serial, cameras, name):
         if not self.preparing:

@@ -205,6 +205,50 @@ class BackgroundTests(unittest.TestCase):
         self.assertEqual(offered, [True, True])
         self.assertEqual(errors, [])
 
+    def test_stream_problems_are_explained(self):
+        import socket
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from phonecam.network import diagnose
+
+        class Phone(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_GET(self):
+                if self.path == '/video':
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'multipart/x-mixed-replace;boundary=frame')
+                    self.end_headers()
+                    self.wfile.write(b'--frame\r\n')
+                elif self.path == '/locked':
+                    self.send_response(401)
+                    self.end_headers()
+                elif self.path == '/':
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'text/html')
+                    self.end_headers()
+                    self.wfile.write(b'<html>IP Webcam</html>')
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Phone)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f'http://127.0.0.1:{server.server_port}'
+        try:
+            self.assertEqual(diagnose(base + '/video'), '')
+            self.assertIn('/video', diagnose(base + '/'))           # the app's page, not the stream
+            self.assertIn('δεν υπάρχει', diagnose(base + '/wrong'))
+            self.assertIn('κωδικό', diagnose(base + '/locked'))
+        finally:
+            server.shutdown()
+        with socket.socket() as free:
+            free.bind(('127.0.0.1', 0))
+            closed = free.getsockname()[1]
+        self.assertIn('Start server', diagnose(f'http://127.0.0.1:{closed}/video'))
+        self.assertIn('ίδιο Wi-Fi', diagnose('http://192.0.2.1:8080/video', timeout=1))  # TEST-NET: never answers
+
     def test_matte_and_preview_shapes(self):
         frame = np.full((360, 640, 3), 90, np.uint8)
         alpha = Matte(640, 360)(frame)

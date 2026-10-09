@@ -308,6 +308,9 @@ class CaptureEngine(QObject):
             self.want_capture = False
             self.state.emit('Αποσυνδεδεμένο')
             message = 'Η κάμερα σταμάτησε. Έλεγξε τη σύνδεση του κινητού και πάτησε Σύνδεση.'
+            if self.capture and self.capture.source == 'network':
+                message = ('Η ροή από το κινητό σταμάτησε. Η εφαρμογή κάμερας στο κινητό πρέπει να μένει ανοιχτή '
+                           '(με κλειστή οθόνη κάποιες σταματούν — άφησέ τη σε πρώτο πλάνο) και στο ίδιο Wi-Fi. Πάτησε ξανά Σύνδεση.')
             if self.logs:
                 useful = [line for line in self.logs.splitlines() if any(word in line.lower() for word in ('error', 'failed', 'disconnected', 'busy'))]
                 if useful:
