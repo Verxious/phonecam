@@ -49,7 +49,7 @@ printf "REPOSITORY = %s\nAPPIMAGE = True\n" "$(python3 -c 'import sys;print(repr
 "$PY" -m compileall -q "$SITE/phonecam"
 
 echo '== FFmpeg, scrcpy, adb'
-mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/scrcpy"
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib/gaps" "$APPDIR/usr/share/scrcpy"
 fetch "$FFMPEG_URL" ffmpeg.tar.xz
 tar -xJf "$CACHE/ffmpeg.tar.xz" -C "$WORK" --wildcards '*/bin/ffmpeg'
 cp "$WORK"/ffmpeg-*/bin/ffmpeg "$APPDIR/usr/bin/"
@@ -60,9 +60,9 @@ ln -sf ../share/scrcpy/scrcpy "$APPDIR/usr/bin/scrcpy"
 ln -sf ../share/scrcpy/adb "$APPDIR/usr/bin/adb"
 
 echo '== X11 helper libraries (Qt xcb plugin) from an old glibc base'
-docker run --rm -v "$APPDIR/usr/lib:/out" ubuntu:20.04 bash -c '
+docker run --rm -v "$APPDIR/usr/lib/gaps:/out" ubuntu:20.04 bash -c '
     apt-get update -qq >/dev/null && cd /tmp &&
-    apt-get download -qq libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-util1 libxkbcommon-x11-0 libxcb-xkb1 libgssapi-krb5-2 libkrb5-3 libk5crypto3 libkrb5support0 libkeyutils1 >/dev/null &&
+    apt-get download -qq libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-util1 libxkbcommon-x11-0 libxcb-xkb1 libxkbcommon0 libxcb-shape0 libxcb-render0 libxcb-randr0 libxcb-shm0 libxcb-sync1 libxcb-xfixes0 libxcb-xinerama0 libxcb-xinput0 libwayland-cursor0 libwayland-egl1 libwayland-client0 libgssapi-krb5-2 libkrb5-3 libk5crypto3 libkrb5support0 libkeyutils1 >/dev/null &&
     for deb in *.deb; do dpkg-deb -x "$deb" root; done &&
     cp -a root/usr/lib/x86_64-linux-gnu/*.so.* /out/ && { cp -a root/lib/x86_64-linux-gnu/*.so.* /out/ 2>/dev/null || true; } && chown -R '"$(id -u):$(id -g)"' /out'
 
@@ -85,8 +85,19 @@ cat > "$APPDIR/AppRun" <<'EOF'
 #!/bin/sh
 HERE=$(dirname "$(readlink -f "$0")")
 export PATH="$HERE/usr/bin:$HERE/opt/python3.12/bin:$PATH"
-# Bundled X11 helpers only fill gaps; host graphics drivers keep priority.
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}$HERE/usr/lib"
+# Bundled X11/Kerberos helpers only fill gaps. Any library the system already has must
+# come from the system: xcb extension libraries have to match the host's libxcb, and
+# LD_LIBRARY_PATH would otherwise override them (crash on opening a window).
+HOSTLIBS=$({ ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | awk '{print $1}')
+GAPS="${XDG_CACHE_HOME:-$HOME/.cache}/phonecam/libs-$(id -u)"
+rm -rf "$GAPS" && mkdir -p "$GAPS"
+for library in "$HERE"/usr/lib/gaps/*.so.*; do
+    name=$(basename "$library")
+    soname=$(echo "$name" | sed -E 's/(\.so\.[0-9]+).*/\1/')
+    printf '%s\n' "$HOSTLIBS" | grep -qxF "$soname" || ln -sf "$library" "$GAPS/$soname"
+done
+# usr/lib holds the bundled Python's own libraries (OpenSSL, libffi…) and always applies.
+export LD_LIBRARY_PATH="$GAPS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}:$HERE/usr/lib"
 export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
 # The bundled OpenSSL does not know where this distribution keeps its CA certificates.
 if [ -z "${SSL_CERT_FILE:-}" ]; then

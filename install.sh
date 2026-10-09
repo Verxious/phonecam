@@ -68,11 +68,24 @@ loopback_ok() {
     modinfo v4l2loopback >/dev/null 2>&1 || /sbin/modinfo v4l2loopback >/dev/null 2>&1
 }
 
+have_library() {
+    { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q "$1"
+}
+
+qt_x11_ok() {
+    # Qt 6.5+ cannot open a window on X11 without these (pip's PySide6 does not bring them).
+    local library
+    for library in libxcb-cursor.so.0 libxkbcommon-x11.so.0 libxcb-icccm.so.4 libxcb-keysyms.so.1; do
+        have_library "$library" || return 1
+    done
+}
+
 missing=()
 report() {
     missing=()
     say "PhoneCam · έλεγχος εξαρτήσεων"
     if python_ok; then good "Python + PySide6 + OpenCV + numpy ($(python_for_app))"; else bad "Python 3.11+ με PySide6, OpenCV 4.8+, numpy"; missing+=(python); fi
+    if qt_x11_ok; then good "Βιβλιοθήκες παραθύρων Qt (X11)"; else bad "Βιβλιοθήκες παραθύρων Qt (libxcb-cursor0 κ.ά.)"; missing+=(qtx11); fi
     if ffmpeg_ok; then good "FFmpeg (με zmq)"; else bad "FFmpeg με zmq filter"; missing+=(ffmpeg); fi
     if command -v adb >/dev/null; then good "adb"; else bad "adb (android-tools)"; missing+=(adb); fi
     if scrcpy_ok; then good "scrcpy $(scrcpy --version 2>/dev/null | head -1 | awk '{print $2}')"; else bad "scrcpy 2.2+ (κάμερα κινητού)"; missing+=(scrcpy); fi
@@ -165,6 +178,7 @@ install_missing() {
         case $manager:$item in
             pacman:python) packages+=(python python-pyside6 python-numpy python-opencv) ;;
             pacman:ffmpeg) packages+=(ffmpeg) ;;
+            pacman:qtx11) packages+=(xcb-util-cursor libxkbcommon-x11 xcb-util-wm xcb-util-keysyms xcb-util-image xcb-util-renderutil) ;;
             pacman:adb) packages+=(android-tools) ;;
             pacman:scrcpy) packages+=(scrcpy) ;;
             pacman:loopback) driver+=(v4l2loopback-dkms v4l2loopback-utils $(kernel_headers_arch)) ;;
@@ -172,12 +186,14 @@ install_missing() {
             pacman:polkit) packages+=(polkit) ;;
             apt:python) packages+=(python3 python3-venv python3-pip curl ca-certificates) ;;
             apt:ffmpeg) packages+=(ffmpeg) ;;
+            apt:qtx11) packages+=(libxcb-cursor0 libxkbcommon-x11-0 libxcb-icccm4 libxcb-keysyms1 libxcb-image0 libxcb-render-util0 libxcb-xinerama0 libxcb-shape0) ;;
             apt:adb) packages+=(adb) ;;
             apt:loopback) driver+=(v4l2loopback-dkms v4l2loopback-utils "linux-headers-$(uname -r)") ;;
             apt:git) packages+=(git) ;;
             apt:polkit) packages+=(pkexec) ;;
             dnf:python) packages+=(python3 python3-pip) ;;
             dnf:ffmpeg) packages+=(ffmpeg) ;;
+            dnf:qtx11) packages+=(xcb-util-cursor libxkbcommon-x11 xcb-util-wm xcb-util-keysyms xcb-util-image xcb-util-renderutil) ;;
             dnf:adb) packages+=(android-tools) ;;
             dnf:loopback) driver+=(v4l2loopback akmod-v4l2loopback kernel-devel) ;;
             dnf:git) packages+=(git) ;;
